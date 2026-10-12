@@ -1,0 +1,11 @@
+[Unit]
+Description=Run X-Tunnel Cloudflare IP speed test daily at 18:00 China time
+
+[Timer]
+OnCalendar=*-*-* 18:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=x-tunnel-speedtest.service
+
+[Install]
+WantedBy=timers.target

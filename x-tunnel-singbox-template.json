@@ -1,0 +1,21 @@
+{
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "__XTUNNEL_NODE_TEMPLATE__",
+      "server": "127.0.0.1",
+      "server_port": 32322
+    },
+    {
+      "type": "urltest",
+      "tag": "🧩 X-Tunnel 节点组",
+      "providers": [
+        "x-tunnel"
+      ],
+      "include": ".*",
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "3m0s",
+      "tolerance": 100
+    }
+  ]
+}

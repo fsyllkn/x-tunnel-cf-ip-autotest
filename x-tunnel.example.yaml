@@ -1,0 +1,18 @@
+# X-Tunnel 节点配置。每行格式：名称|服务地址|密钥token|cfip|连接数|端口
+# token、CF IP、连接数留空时使用 defaults 中的值。
+# 未指定端口时，从 first_port 开始按节点顺序递增，最多支持5个节点。
+defaults:
+  token: "替换为你的默认密钥"
+  cfip: "替换为优选 CF IP"
+  connections: 3
+  ech: "cloudflare-ech.com"
+  dns: "https://doh.pub/dns-query"
+  listen_hosts:
+    - "127.0.0.1"
+    # 需要在局域网使用时，替换成服务端局域网地址并确认防火墙放行。
+    # - "192.168.1.10"
+  first_port: 32322
+max_nodes: 5
+nodes:
+  - "节点1|wss://example.com/path:443||||"
+  - "节点2|wss://example.com/path:443||||"
