@@ -3,8 +3,20 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ENABLE_TIMER=0
+OPENWRT=0
+PLATFORM=systemd
 KERNEL_PATH=/usr/bin/x-tunnel
 KERNEL_REPOSITORY=caichengle666/x-tunnel
+
+if [ -f /etc/openwrt_release ] || {
+    [ -f /etc/rc.common ] && [ -x /sbin/procd ]
+}; then
+    OPENWRT=1
+    PLATFORM=openwrt
+elif [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "Unsupported init system: expected OpenWrt procd or systemd." >&2
+    exit 1
+fi
 
 for argument in "$@"; do
     case "$argument" in
@@ -18,7 +30,13 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-for command in systemctl ip sed install python3 uname; do
+printf 'Detected platform: %s\n' "$PLATFORM"
+
+required_commands="ip sed install python3 uname"
+if [ "$OPENWRT" -eq 0 ]; then
+    required_commands="$required_commands systemctl"
+fi
+for command in $required_commands; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "Required command not found: $command" >&2
         exit 1
@@ -116,7 +134,11 @@ chmod 0600 "$PROJECT_DIR/speedtest-bot.env" "$PROJECT_DIR/x-tunnel.yaml"
 chmod 0644 "$PROJECT_DIR/project.env"
 
 python3 -c 'import yaml' >/dev/null 2>&1 || {
-    echo "Python dependency PyYAML is missing (install python3-yaml)." >&2
+    if [ "$OPENWRT" -eq 1 ]; then
+        echo "Python dependency PyYAML is missing (install python3-yaml with opkg/apk)." >&2
+    else
+        echo "Python dependency PyYAML is missing (install python3-yaml)." >&2
+    fi
     exit 1
 }
 PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs()' || {
@@ -140,31 +162,64 @@ if not values.get("TG_CHATID", "").isdecimal():
     raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
 PY
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
+mkdir -p /run/lock
 chmod 0755 "$PROJECT_DIR/runtime"
 chmod 0700 "$PROJECT_DIR/cfip-data"
 
-for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-bot.service x-tunnel-speedtest.timer x-tunnel-speedtest-single@.service; do
-    temporary="/etc/systemd/system/$unit.tmp"
-    sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/systemd/$unit" > "$temporary"
-    chmod 0644 "$temporary"
-    mv "$temporary" "/etc/systemd/system/$unit"
-done
-systemctl daemon-reload
-systemctl enable x-tunnel.service x-tunnel-speedtest-bot.service
-for unit in x-tunnel.service x-tunnel-speedtest-bot.service; do
-    if systemctl is-active --quiet "$unit"; then
-        systemctl restart "$unit"
-    else
-        systemctl start "$unit"
+if [ "$OPENWRT" -eq 1 ]; then
+    [ -d /etc/init.d ] && [ -f /etc/rc.common ] || {
+        echo "OpenWrt procd init system was not found." >&2
+        exit 1
+    }
+    for service in x-tunnel x-tunnel-speedtest-bot; do
+        temporary="/etc/init.d/$service.tmp"
+        sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/openwrt/$service.init" > "$temporary"
+        chmod 0755 "$temporary"
+        mv -f "$temporary" "/etc/init.d/$service"
+        "/etc/init.d/$service" enable
+        "/etc/init.d/$service" stop >/dev/null 2>&1 || true
+        "/etc/init.d/$service" start
+    done
+    if [ "$ENABLE_TIMER" -eq 1 ]; then
+        cron_entry="0 18 * * * /bin/sh '$PROJECT_DIR/openwrt/run-speedtest.sh' >> '$PROJECT_DIR/cfip-data/cron.log' 2>&1"
+        cron_marker="# x-tunnel-cf-ip-autotest daily speedtest"
+        mkdir -p /etc/crontabs
+        touch /etc/crontabs/root
+        if ! grep -Fq "$cron_marker" /etc/crontabs/root 2>/dev/null; then
+            printf '%s\n%s\n' "$cron_marker" "$cron_entry" >> /etc/crontabs/root
+        fi
+        /etc/init.d/cron enable
+        /etc/init.d/cron start
     fi
-done
+    printf 'Installed X-Tunnel procd services from %s\n' "$PROJECT_DIR"
+    printf 'Status: /etc/init.d/x-tunnel status; logread -e x-tunnel\n'
+    if [ "$ENABLE_TIMER" -eq 0 ]; then
+        printf 'Daily 18:00 speed test unchanged; install with --enable-timer to add the cron job.\n'
+    fi
+else
+    for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-bot.service x-tunnel-speedtest.timer x-tunnel-speedtest-single@.service; do
+        temporary="/etc/systemd/system/$unit.tmp"
+        sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/systemd/$unit" > "$temporary"
+        chmod 0644 "$temporary"
+        mv -f "$temporary" "/etc/systemd/system/$unit"
+    done
+    systemctl daemon-reload
+    systemctl enable x-tunnel.service x-tunnel-speedtest-bot.service
+    for unit in x-tunnel.service x-tunnel-speedtest-bot.service; do
+        if systemctl is-active --quiet "$unit"; then
+            systemctl restart "$unit"
+        else
+            systemctl start "$unit"
+        fi
+    done
 
-if [ "$ENABLE_TIMER" -eq 1 ]; then
-    systemctl enable --now x-tunnel-speedtest.timer
-fi
+    if [ "$ENABLE_TIMER" -eq 1 ]; then
+        systemctl enable --now x-tunnel-speedtest.timer
+    fi
 
-printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
-printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
-if [ "$ENABLE_TIMER" -eq 0 ]; then
-    printf 'Daily 18:00 (Asia/Shanghai) timer unchanged; enable with: systemctl enable --now x-tunnel-speedtest.timer\n'
+    printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
+    printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
+    if [ "$ENABLE_TIMER" -eq 0 ]; then
+        printf 'Daily 18:00 (Asia/Shanghai) timer unchanged; enable with: systemctl enable --now x-tunnel-speedtest.timer\n'
+    fi
 fi

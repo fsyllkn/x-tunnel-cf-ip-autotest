@@ -21,6 +21,7 @@ from project_settings import (
     set_target_mbps,
     telegram_proxy_chain,
 )
+from platform_services import is_openwrt, is_systemd, launch_speedtest as launch_openwrt_speedtest, restart_xtunnel as restart_openwrt_xtunnel, speedtest_running
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -107,6 +108,14 @@ def send_message(token, chat_id, text):
 
 
 def launch_speedtest():
+    if is_openwrt() and not is_systemd():
+        if speedtest_running():
+            return False, "测速已经在运行，请稍后查看结果。"
+        try:
+            launch_openwrt_speedtest()
+        except OSError:
+            return False, "无法启动测速进程，请检查 cfip-data/openwrt-speedtest.log。"
+        return True, "已启动 CF IP 测速。测速进度和结果将通过 Bot 通知。"
     if subprocess.run(
         ["systemctl", "is-active", "--quiet", SPEEDTEST_SERVICE],
         check=False,
@@ -129,6 +138,14 @@ def launch_single_speedtest(value):
     except ValueError:
         return False, "IP 地址格式无效。用法：/speedtest <IP>，例如 /speedtest 104.17.76.76"
     ip = str(address)
+    if is_openwrt() and not is_systemd():
+        if speedtest_running():
+            return False, "已有测速任务正在运行，请稍后再试。"
+        try:
+            launch_openwrt_speedtest(ip)
+        except OSError:
+            return False, "无法启动单 IP 测速，请检查 cfip-data/openwrt-speedtest.log。"
+        return True, "已启动 IP %s 的单独测速：30 秒，取第 5–30 秒均速；不更新节点配置。完成后会发送结果。" % ip
     escaped = subprocess.run(
         ["systemd-escape", "--template=" + SINGLE_SPEEDTEST_TEMPLATE, ip],
         capture_output=True,
@@ -152,6 +169,15 @@ def launch_single_speedtest(value):
 
 
 def restart_xtunnel():
+    if is_openwrt() and not is_systemd():
+        try:
+            result = restart_openwrt_xtunnel()
+        except (OSError, subprocess.TimeoutExpired):
+            return "重启 x-tunnel 服务失败或超时，请检查 /etc/init.d/x-tunnel。"
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "").strip()
+            return "重启 x-tunnel 服务失败。%s" % detail[:500]
+        return "x-tunnel 服务已重启。"
     try:
         result = subprocess.run(
             ["systemctl", "restart", "x-tunnel.service"],

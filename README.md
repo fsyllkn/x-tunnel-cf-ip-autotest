@@ -1,6 +1,6 @@
 # X-Tunnel 节点、测速与部署手册
 
-本项目管理 x-tunnel 内核进程、生成 sing-box 本地节点 Provider、Cloudflare IP 测速与 Telegram 通知。ShellCrash 与 X-Tunnel 服务互相独立；ShellCrash 只需由用户自行配置为读取生成的 Provider。项目目录可整体迁移；安装脚本按实际目录生成 systemd 服务路径。
+本项目管理 x-tunnel 内核进程、生成 sing-box 本地节点 Provider、Cloudflare IP 测速与 Telegram 通知。支持 systemd Linux 与 OpenWrt procd；ShellCrash 与 X-Tunnel 服务互相独立，ShellCrash 只需由用户自行配置为读取生成的 Provider。项目目录可整体迁移；安装脚本按实际目录生成服务路径。
 
 ## 组成与目录
 
@@ -14,6 +14,7 @@
 - `runtime/`：默认的 sing-box 节点 Provider。将 ShellCrash 的 local provider 手动指向此文件，或在 `project.env` 指定自定义位置。
 - `project.env`：可选运行变量。`X_TUNNEL_PROVIDER_PATH` 自定义 Provider 输出位置，`X_TUNNEL_LISTEN_HOSTS` 设置本机/LAN 监听 IP，`X_TUNNEL_TG_PROXY` 设置可选 Telegram 代理，`X_TUNNEL_TARGET_MBPS` 设置首选测速目标（整数 Mbps，默认 300）。
 - `systemd/`：服务与定时器模板。`@PROJECT_DIR@` 在安装时替换为真实项目目录。
+- `openwrt/`：OpenWrt procd 服务模板与 cron 测速入口。
 - `x-tunnel.example.yaml`、`speedtest-bot.env.example`、`project.env.example`：不含真实凭据的初始配置模板。
 - `x-tunnel.md`：旧版内核配置参考文件；当前服务不读取它。
 
@@ -25,7 +26,7 @@
 
 ## 部署
 
-适用环境：systemd Linux、root 权限、Python 3 与 PyYAML。ShellCrash 不是 X-Tunnel 安装器的依赖。安装器自动识别 `x86_64/amd64` 或 `aarch64/arm64`。若 `/usr/bin/x-tunnel` 不存在，会从官方 GitHub Releases 下载匹配架构的 Linux 内核，校验 ELF 架构并运行 `-h` 启动检查后安装；若内核已存在则保留原文件，仅校验架构并补齐 `0755` 权限。其他架构会明确报错，不会下载错误二进制。
+适用环境：systemd Linux 或 OpenWrt、root 权限、Python 3 与 PyYAML。ShellCrash 不是 X-Tunnel 安装器的依赖。安装器自动识别 `x86_64/amd64` 或 `aarch64/arm64`。若 `/usr/bin/x-tunnel` 不存在，会从官方 GitHub Releases 下载匹配架构的 Linux 内核，校验 ELF 架构并运行 `-h` 启动检查后安装；若内核已存在则保留原文件，仅校验架构并补齐 `0755` 权限。自动下载目前支持上述两种 64 位架构，其他架构需自行准备兼容内核。
 
 1. 创建运行配置：
 
@@ -36,7 +37,7 @@
    editor x-tunnel.yaml
    ```
 
-   每行节点格式为 `名称|服务地址|密钥token|cfip|连接数|端口`。可省略末尾可选字段，默认值来自 `defaults`。`first_port` 是第一个节点的首选端口，后续节点按顺序递增；最多 5 个节点。服务启动前会检查所有监听地址的端口是否可绑定；若首选端口已被其他进程占用，或节点间配置了重复端口，会自动向后寻找可用端口并同步实际端口到 Provider。配置文件变化由 supervisor 每 2 秒检测并自动重载。监听地址默认本机回环。若要 LAN 接入，在 `project.env` 设置 `X_TUNNEL_LISTEN_HOSTS=127.0.0.1,<本机实际LAN地址>`，服务会绑定这些地址；空值只绑定 `127.0.0.1`。每个节点实例的地址由此变量统一管理，不需要在 YAML 里写死局域网地址。
+   每行节点格式为 `名称|服务地址|密钥token|cfip|连接数|端口`。可省略末尾可选字段，默认值来自 `defaults`。`max_nodes` 控制最多读取多少个节点，默认值为 5，可设为任意正整数；如果 `nodes` 中的行数超过该值，只读取前 `max_nodes` 行，其余忽略并在日志中警告，不会因此阻止服务启动。`first_port` 是第一个节点的首选端口，后续节点按顺序递增。服务启动前会检查所有监听地址的端口是否可绑定；若首选端口已被其他进程占用，或节点间配置了重复端口，会自动向后寻找可用端口并同步实际端口到 Provider。配置文件变化由 supervisor 每 2 秒检测并自动重载。监听地址默认本机回环。若要 LAN 接入，在 `project.env` 设置 `X_TUNNEL_LISTEN_HOSTS=127.0.0.1,<本机实际LAN地址>`，服务会绑定这些地址；空值只绑定 `127.0.0.1`。每个节点实例的地址由此变量统一管理，不需要在 YAML 里写死局域网地址。
 
 2. 设置 Telegram 专用 Bot。先在 Telegram 对专用 Bot 发送 `/start`，然后：
 
@@ -47,7 +48,17 @@
    python3 telegram_speedtest_bot.py --show-chat-ids
    ```
 
-   将 BotFather 提供的 token 填入 `TG_TOKEN`，将命令显示的私聊数字 ID 填入 `TG_CHATID`。不要把 token 发到聊天、日志或工单中。Telegram 代理通过 `project.env` 配置：`X_TUNNEL_TG_PROXY` 可留空，留空时使用 `X_TUNNEL_LOCAL_PROXY`（默认本机 ShellCrash HTTP 代理 `http://127.0.0.1:7890`）；需要指定网络代理时填写完整 URL。修改代理变量后重启 Bot 服务和测速服务使其生效。
+   将 BotFather 提供的 token 填入 `TG_TOKEN`，将命令显示的私聊数字 ID 填入 `TG_CHATID`。不要把 token 发到聊天、日志或工单中。
+
+   Telegram 出站代理在 `project.env` 中配置。默认值 `X_TUNNEL_LOCAL_PROXY=http://127.0.0.1:7890` 假设本机已有 HTTP 代理服务监听 `127.0.0.1:7890`，通常是 ShellCrash 的 HTTP/mixed 代理端口；X-Tunnel 项目本身不会创建这个代理监听。如果当前设备没有 ShellCrash，或 ShellCrash 使用其他端口，请改成设备上实际可用的代理地址，例如：
+
+   ```sh
+   X_TUNNEL_LOCAL_PROXY=http://127.0.0.1:你的代理端口
+   # 或使用局域网内其他代理服务：
+   X_TUNNEL_LOCAL_PROXY=http://代理服务器的局域网IP:代理端口
+   ```
+
+   `X_TUNNEL_TG_PROXY` 是可选的 Telegram 专用代理，设置后优先尝试该地址，失败时回退到 `X_TUNNEL_LOCAL_PROXY`；留空则直接使用本机代理。至少要有一个可连接的代理，否则 Bot 命令轮询和测速通知无法连接 Telegram。修改代理变量后重启 Bot 服务和测速服务使其生效。
 
 3. 安装服务：
 
@@ -67,6 +78,41 @@
    ```
 
    安装脚本默认不改变 timer 的启用状态。定时器执行 `x-tunnel-speedtest.service`，也可以从 Telegram 发送 `/speedtest` 手动启动完整自动测速。专用 Bot 私聊白名单还可使用 `/restartxtunnel`（或 `/restart`）重启 `x-tunnel.service`。
+
+## OpenWrt 安装
+
+OpenWrt 使用 procd 管理常驻的 X-Tunnel supervisor 与 Telegram Bot；测速任务由 Bot 直接后台启动，运行日志写入 `cfip-data/openwrt-speedtest.log`。安装器会检测 OpenWrt 并安装 `/etc/init.d/x-tunnel` 与 `/etc/init.d/x-tunnel-speedtest-bot`，不调用 systemd。当前内核下载和 ELF 校验仅支持 `x86_64` 与 `aarch64`；其他架构暂不支持此安装器。
+
+先通过设备现有包管理器安装依赖。包名会随 OpenWrt 分支和架构略有不同，可先检查对应 feed 是否提供这些包：
+
+```sh
+# opkg 系统示例
+opkg update
+opkg install python3-light python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+
+# apk 系统示例
+apk update
+apk add python3-light python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+```
+
+建议把项目放到有足够可写空间的持久化存储中（例如 USB/extroot），然后按常规步骤准备 `x-tunnel.yaml`、`speedtest-bot.env` 和 `project.env`，执行：
+
+```sh
+chmod +x install.sh
+./install.sh
+```
+
+每天 18:00（设备本地时区）运行测速可执行 `./install.sh --enable-timer`。安装器会将任务加入 `/etc/crontabs/root` 并启用 cron。OpenWrt 安装中通过 Bot 启动的测速进程输出到 `cfip-data/openwrt-speedtest.log`。
+
+```sh
+/etc/init.d/x-tunnel status
+/etc/init.d/x-tunnel restart
+/etc/init.d/x-tunnel-speedtest-bot status
+logread -e x-tunnel
+tail -f /home/x-tunnel/cfip-data/openwrt-speedtest.log
+```
+
+若项目不在 `/home/x-tunnel`，查看日志时将示例路径替换为实际项目目录。测速需要可用的 `ip` 路由工具及足够空间保存 Python 运行环境和测速数据；低存储路由器建议只运行 X-Tunnel 节点服务，不安装 Bot 与自动测速。
 
 ## 测速与分流行为
 

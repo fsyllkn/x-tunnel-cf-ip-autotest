@@ -30,7 +30,7 @@ WATCHED_FILES = (
     BASE_DIR / "x-tunnel-singbox-template.json",
     PROJECT_ENV_FILE,
 )
-MAX_NODES = 5
+DEFAULT_MAX_NODES = 5
 RESTART_DELAY = 5
 POLL_INTERVAL = 2
 
@@ -90,11 +90,15 @@ def read_specs(reusable_bindings=None):
     nodes = document.get("nodes") or []
     if not isinstance(nodes, list):
         raise ValueError("nodes must be a list of pipe-delimited strings")
-    max_nodes = document.get("max_nodes", MAX_NODES)
-    if not isinstance(max_nodes, int) or max_nodes < 1 or max_nodes > MAX_NODES:
-        raise ValueError("max_nodes must be between 1 and 5")
+    max_nodes = document.get("max_nodes", DEFAULT_MAX_NODES)
+    if isinstance(max_nodes, bool) or not isinstance(max_nodes, int) or max_nodes < 1:
+        raise ValueError("max_nodes must be a positive integer")
     if len(nodes) > max_nodes:
-        raise ValueError("configured node count exceeds max_nodes=%d" % max_nodes)
+        logging.warning(
+            "configured node count is %d; max_nodes=%d, ignoring %d extra nodes",
+            len(nodes), max_nodes, len(nodes) - max_nodes,
+        )
+        nodes = nodes[:max_nodes]
 
     first_port = int(defaults.get("first_port", 32322))
     configured_hosts = os.environ.get("X_TUNNEL_LISTEN_HOSTS")

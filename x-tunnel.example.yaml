@@ -1,6 +1,7 @@
 # X-Tunnel 节点配置。每行格式：名称|服务地址|密钥token|cfip|连接数|端口
 # token、CF IP、连接数留空时使用 defaults 中的值。
-# 未指定端口时，从 first_port 开始按节点顺序递增，最多支持5个节点。
+# 未指定端口时，从 first_port 开始按节点顺序递增。
+# max_nodes 是读取的节点数上限，超过上限的节点行会被忽略。
 defaults:
   token: "替换为你的默认密钥"
   cfip: "替换为优选 CF IP"
