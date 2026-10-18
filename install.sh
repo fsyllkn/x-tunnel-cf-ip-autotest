@@ -141,7 +141,7 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     fi
     exit 1
 }
-PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs()' || {
+PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' || {
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }

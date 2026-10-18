@@ -145,7 +145,7 @@ def launch_single_speedtest(value):
             launch_openwrt_speedtest(ip)
         except OSError:
             return False, "无法启动单 IP 测速，请检查 cfip-data/openwrt-speedtest.log。"
-        return True, "已启动 IP %s 的单独测速：30 秒，取第 5–30 秒均速；不更新节点配置。完成后会发送结果。" % ip
+        return True, "已启动 IP %s 的单独测速：完整采样 30 秒；均速达到 100 Mbps 且波动稳定后才写入匹配地区节点。完成后会发送测速与写入结果。" % ip
     escaped = subprocess.run(
         ["systemd-escape", "--template=" + SINGLE_SPEEDTEST_TEMPLATE, ip],
         capture_output=True,
@@ -165,7 +165,7 @@ def launch_single_speedtest(value):
     )
     if result.returncode:
         return False, "无法启动单 IP 测速；请确认已安装 %s。" % SINGLE_SPEEDTEST_TEMPLATE
-    return True, "已启动 IP %s 的单独测速：30 秒，取第 5–30 秒均速；不运行自动选取，也不会改写节点配置。完成后会发送结果。" % ip
+    return True, "已启动 IP %s 的单独测速：完整采样 30 秒；均速达到 100 Mbps 且波动稳定后才写入匹配地区节点。完成后会发送测速与写入结果。" % ip
 
 
 def restart_xtunnel():
@@ -205,7 +205,7 @@ def handle_update(token, allowed_chat_id, update):
         send_message(
             token,
             allowed_chat_id,
-            "测速 bot 已就绪。\n/speedtest 开始完整测速\n/speedtest <IP> 单独测速该 IP（30 秒，不改配置）\n/topspeed 查看或设置目标 Mbps\n/restartxtunnel 重启 X-Tunnel 服务。",
+            "测速 bot 已就绪。\n/speedtest 开始完整测速\n/speedtest <IP> 单独测速该 IP（完整 30 秒；均速达到 100 Mbps 且稳定后写入匹配地区节点）\n/topspeed 查看或设置目标 Mbps\n/restartxtunnel 重启 X-Tunnel 服务。",
         )
     elif command == "/speedtest":
         arguments = text.split(maxsplit=1)
@@ -219,7 +219,7 @@ def handle_update(token, allowed_chat_id, update):
     elif command == "/topspeed":
         arguments = text.split(maxsplit=1)
         if len(arguments) == 1:
-            send_message(token, allowed_chat_id, "当前测速目标：%d Mbps；达标 IP 数量仍为 2。" % get_target_mbps())
+            send_message(token, allowed_chat_id, "当前测速目标：%d Mbps；默认按有效节点数选取，最多 3 个 IP。" % get_target_mbps())
             return
         try:
             value = arguments[1].strip()
@@ -229,7 +229,7 @@ def handle_update(token, allowed_chat_id, update):
             if not MIN_TARGET_MBPS <= target <= MAX_TARGET_MBPS:
                 raise ValueError("目标速度范围为 %d–%d Mbps。" % (MIN_TARGET_MBPS, MAX_TARGET_MBPS))
             set_target_mbps(target)
-            reply = "测速目标已设为 %d Mbps；达标 IP 数量仍为 2。" % target
+            reply = "测速目标已设为 %d Mbps；默认按有效节点数选取，最多 3 个 IP。" % target
         except (OSError, ValueError) as error:
             reply = str(error)
         send_message(token, allowed_chat_id, reply)
@@ -242,7 +242,7 @@ def run_bot():
         "commands": [
             {"command": "start", "description": "检查测速机器人状态"},
             {"command": "help", "description": "显示可用命令"},
-            {"command": "speedtest", "description": "自动测速，或 /speedtest <IP> 单测"},
+            {"command": "speedtest", "description": "自动测速，或单测 IP 并按地区写入达标结果"},
             {"command": "topspeed", "description": "查看或设置目标 Mbps"},
             {"command": "restart", "description": "重启 x-tunnel 服务"},
             {"command": "restartxtunnel", "description": "重启 X-Tunnel 服务"},

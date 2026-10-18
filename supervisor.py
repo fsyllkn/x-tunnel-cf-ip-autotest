@@ -3,15 +3,20 @@ import logging
 import ipaddress
 import json
 import os
+import re
 import signal
+import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import yaml
-from project_settings import PROJECT_ENV_FILE, load_project_env
+from project_settings import PROJECT_ENV_FILE, load_project_env, telegram_proxy_chain
 
 
 load_project_env()
@@ -33,6 +38,13 @@ WATCHED_FILES = (
 DEFAULT_MAX_NODES = 5
 RESTART_DELAY = 5
 POLL_INTERVAL = 2
+STALE_X_TUNNEL_WAIT = 5.0
+UNKNOWN_SOCKET_WAIT = 1.0
+PORT_RELEASE_POLL = 0.25
+BOT_CONFIG_FILE = Path(os.environ.get(
+    "X_TUNNEL_BOT_CONFIG", str(BASE_DIR / "speedtest-bot.env")
+))
+notified_port_conflicts = set()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +67,7 @@ def port_available(port, listen_hosts, reusable_bindings):
         address = ipaddress.ip_address(host)
         family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
         with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind((host, port))
             except OSError:
@@ -62,16 +75,182 @@ def port_available(port, listen_hosts, reusable_bindings):
     return True
 
 
-def allocate_port(preferred_port, listen_hosts, used_ports, reusable_bindings, node_name):
+def port_listener_owners(port):
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            columns = line.split()
+            if len(columns) > 9 and columns[3] == "0A":
+                try:
+                    local_port = int(columns[1].rsplit(":", 1)[1], 16)
+                except (IndexError, ValueError):
+                    continue
+                if local_port == port and columns[9] != "0":
+                    inodes.add(columns[9])
+
+    owners = {}
+    if not inodes:
+        return []
+    for process_path in Path("/proc").iterdir():
+        if not process_path.name.isdecimal():
+            continue
+        try:
+            executable = Path(os.readlink(process_path / "exe")).name
+            cgroup = (process_path / "cgroup").read_text(encoding="utf-8", errors="replace")
+            descriptors = (process_path / "fd").iterdir()
+        except (OSError, PermissionError):
+            continue
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            match = re.fullmatch(r"socket:\[(\d+)\]", target)
+            if match and match.group(1) in inodes:
+                is_x_tunnel = executable == "x-tunnel" or "x-tunnel.service" in cgroup
+                owners[process_path.name] = {
+                    "pid": int(process_path.name),
+                    "name": "X-Tunnel" if is_x_tunnel else executable or "unknown process",
+                    "is_x_tunnel": is_x_tunnel,
+                }
+                break
+        if len(owners) >= len(inodes):
+            break
+    return list(owners.values())
+
+
+def wait_for_startup_port_release(port, listen_hosts, reusable_bindings, owners):
+    if owners and not all(owner["is_x_tunnel"] for owner in owners):
+        return False
+    timeout = STALE_X_TUNNEL_WAIT if owners else UNKNOWN_SOCKET_WAIT
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(PORT_RELEASE_POLL)
+        if port_available(port, listen_hosts, reusable_bindings):
+            return True
+    return False
+
+
+def read_bot_credentials():
+    values = {}
+    try:
+        lines = BOT_CONFIG_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "", ""
+    for line in lines:
+        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        try:
+            parsed = shlex.split(match.group(2), comments=True)
+        except ValueError:
+            continue
+        values[match.group(1)] = parsed[0] if parsed else ""
+    return values.get("TG_TOKEN", ""), values.get("TG_CHATID", "")
+
+
+def send_port_conflict_notification(event):
+    token, chat_id = read_bot_credentials()
+    if not token or not chat_id:
+        logging.warning("cannot send port-conflict Telegram alert: bot credentials or chat ID missing")
+        return
+    blocked = ", ".join(
+        "%(port)s (%(owner)s)" % item for item in event["blocked_ports"]
+    )
+    text = (
+        "⚠️ X-Tunnel 端口被其他进程占用，已自动顺延\n"
+        "节点：%(node)s\n首选端口：%(preferred)s\n实际端口：%(assigned)s\n"
+        "冲突端口：%(blocked)s"
+    ) % {
+        "node": event["node"],
+        "preferred": event["preferred_port"],
+        "assigned": event["assigned_port"],
+        "blocked": blocked,
+    }
+    endpoint = "https://api.telegram.org/bot%s/sendMessage" % token
+    payload = json.dumps({"chat_id": chat_id, "text": text}, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    for proxy in telegram_proxy_chain():
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+        try:
+            with opener.open(request, timeout=8) as response:
+                result = json.loads(response.read(65536).decode("utf-8"))
+            if result.get("ok"):
+                logging.info("sent Telegram alert for occupied SOCKS5 port %d", event["preferred_port"])
+                return
+        except (OSError, TimeoutError, ValueError, urllib.error.URLError):
+            continue
+    logging.warning("failed to send Telegram alert for occupied SOCKS5 port %d", event["preferred_port"])
+
+
+def notify_port_conflict(event):
+    key = (event["node"], event["preferred_port"], event["assigned_port"])
+    if key in notified_port_conflicts:
+        return
+    notified_port_conflicts.add(key)
+    threading.Thread(
+        target=send_port_conflict_notification,
+        args=(event,),
+        daemon=True,
+    ).start()
+
+
+def allocate_port(
+    preferred_port,
+    listen_hosts,
+    used_ports,
+    reusable_bindings,
+    node_name,
+    on_port_conflict=None,
+):
+    blocked_ports = []
     for port in range(preferred_port, 65536):
         if port in used_ports:
             continue
-        if port_available(port, listen_hosts, reusable_bindings):
+        available = port_available(port, listen_hosts, reusable_bindings)
+        if not available:
+            owners = port_listener_owners(port)
+            if port == preferred_port:
+                available = wait_for_startup_port_release(
+                    port, listen_hosts, reusable_bindings, owners
+                )
+            if not available:
+                owner_text = ", ".join(
+                    "%s PID %d" % (owner["name"], owner["pid"])
+                    for owner in owners
+                ) or "unidentified or transient socket"
+                blocked_ports.append({
+                    "port": port,
+                    "owner": owner_text,
+                    "is_external": bool(owners) and any(
+                        not owner["is_x_tunnel"] for owner in owners
+                    ),
+                })
+                continue
+        if available:
             if port != preferred_port:
                 logging.warning(
                     "SOCKS5 port %d for node %s is occupied; assigned port %d",
                     preferred_port, node_name, port,
                 )
+                if on_port_conflict and any(item["is_external"] for item in blocked_ports):
+                    on_port_conflict({
+                        "node": node_name,
+                        "preferred_port": preferred_port,
+                        "assigned_port": port,
+                        "blocked_ports": blocked_ports,
+                    })
             used_ports.add(port)
             return port
     raise ValueError(
@@ -80,7 +259,7 @@ def allocate_port(preferred_port, listen_hosts, used_ports, reusable_bindings, n
     )
 
 
-def read_specs(reusable_bindings=None):
+def read_specs(reusable_bindings=None, check_port_availability=True, on_port_conflict=None):
     load_project_env()
     reusable_bindings = set(reusable_bindings or ())
     with open(CONFIG, "r", encoding="utf-8") as config_file:
@@ -143,13 +322,20 @@ def read_specs(reusable_bindings=None):
         preferred_port = int(preferred_port)
         if preferred_port < 1 or preferred_port > 65535:
             raise ValueError("node %s port is out of range" % name)
-        port = allocate_port(
-            preferred_port,
-            listen_hosts,
-            used_ports,
-            reusable_bindings,
-            name,
-        )
+        if check_port_availability:
+            port = allocate_port(
+                preferred_port,
+                listen_hosts,
+                used_ports,
+                reusable_bindings,
+                name,
+                on_port_conflict,
+            )
+        else:
+            if preferred_port in used_ports:
+                raise ValueError("duplicate SOCKS5 port %d for node %s" % (preferred_port, name))
+            used_ports.add(preferred_port)
+            port = preferred_port
 
         specs.append({
             "name": name,
@@ -247,15 +433,21 @@ def main():
     signal.signal(signal.SIGINT, stop_handler)
     children = {}
     last_signature = None
+    last_error_signature = None
 
     while not stopping:
         try:
             current_signature = signature()
             if current_signature != last_signature:
                 try:
-                    specs = read_specs(reusable_bindings(children))
-                except Exception:
-                    logging.exception("invalid configuration; keeping current nodes")
+                    specs = read_specs(
+                        reusable_bindings(children),
+                        on_port_conflict=notify_port_conflict,
+                    )
+                except Exception as error:
+                    if current_signature != last_error_signature:
+                        logging.error("invalid configuration; keeping current nodes: %s", error)
+                        last_error_signature = current_signature
                 else:
                     try:
                         sync_result = subprocess.run(
@@ -275,7 +467,8 @@ def main():
                         logging.exception("failed to write local X-Tunnel node provider")
                     reconcile(specs, children)
                     logging.info("loaded %d node(s)", len(specs))
-                last_signature = current_signature
+                    last_signature = current_signature
+                    last_error_signature = None
         except OSError:
             if last_signature is None:
                 raise

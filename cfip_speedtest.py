@@ -41,24 +41,54 @@ IP_LIST_URLS = {
 }
 USER_AGENT = "Mozilla/5.0"
 MIN_RETRY_SPEED_MBPS = 100
-MAX_LOW_SPEED_ROUNDS = 3
+MIN_APPLY_SPEED_MBPS = 50
+MAX_ACCEPTABLE_VARIATION = 0.25
+MAX_REGIONAL_ROUNDS = 3
+IPS_PER_REGIONAL_ROUND = 2
+MAX_NODE_CF_IPS = 2
 EARLY_DISCARD_SECONDS = 3.0
+DEFAULT_SPEED_DURATION = 30.0
 
 
 def direct_read(url, timeout=8):
     import urllib.request
 
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with opener.open(request, timeout=timeout) as response:
-        return response.read(32 * 1024 * 1024).decode("utf-8").strip()
+    sources = [("direct", None)]
+    sources.extend(("configured proxy", proxy) for proxy in telegram_proxy_chain())
+    failures = []
+    for source_name, proxy in sources:
+        if proxy is None:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        else:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+            )
+        for attempt in range(1, 4):
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            try:
+                with opener.open(request, timeout=timeout) as response:
+                    content = response.read(32 * 1024 * 1024).decode("utf-8").strip()
+                if not content:
+                    raise ValueError("empty response")
+                return content
+            except (OSError, TimeoutError, ValueError) as error:
+                failures.append("%s attempt %d: %s" % (source_name, attempt, error))
+                if attempt < 3:
+                    time.sleep(attempt)
+    raise RuntimeError(
+        "could not download %s after direct and configured-proxy retries (%s)"
+        % (url, "; ".join(failures[-6:]))
+    )
 
 
 def load_cached(name, url, refresh=False):
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = DATA_DIR / name
     if refresh or not path.is_file():
-        content = direct_read(url)
+        try:
+            content = direct_read(url)
+        except Exception as error:
+            raise RuntimeError("failed to refresh %s from %s: %s" % (name, url, error)) from error
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(content + "\n", encoding="utf-8")
         os.chmod(temporary, 0o600)
@@ -140,9 +170,12 @@ def one_rtt(ip, port, use_tls):
         connection.sendall(request)
         response = http.client.HTTPResponse(connection)
         response.begin()
-        valid = bool(response.getheader("CF-RAY"))
+        ray = response.getheader("CF-RAY", "")
         response.close()
-        return tcp_ms if valid else None
+        if not ray:
+            return None
+        colo = ray.rsplit("-", 1)[-1].strip().upper()
+        return {"latency_ms": tcp_ms, "colo": colo if re.fullmatch(r"[A-Z0-9]{3,4}", colo) else ""}
     except (OSError, ssl.SSLError, http.client.HTTPException):
         return None
     finally:
@@ -157,7 +190,12 @@ def test_rtt(ip, port, use_tls):
         if measured is None:
             return None
         measurements.append(measured)
-    return round(sum(measurements) / len(measurements))
+    colos = [item["colo"] for item in measurements if item["colo"]]
+    colo = max(set(colos), key=colos.count) if colos else ""
+    return {
+        "latency_ms": round(statistics.mean(item["latency_ms"] for item in measurements)),
+        "colo": colo,
+    }
 
 
 def route_link_capacity_mbps(ip):
@@ -342,6 +380,16 @@ def download_speed(
         if elapsed >= 0.5:
             windows.append((window_started - response_started, time.monotonic() - response_started,
                             window_bytes / 1024 / elapsed))
+        sampled_seconds = time.monotonic() - response_started
+        if sampled_seconds < duration - 1.0:
+            return {
+                "ip": ip,
+                "status": "incomplete",
+                "sampled_seconds": round(sampled_seconds, 2),
+                "request_count": request_count,
+                "colo": colo,
+                "tcp_ms": tcp_ms,
+            }
         if not windows:
             return None
         stable_windows = [rate for start, _, rate in windows if start >= discard_after]
@@ -359,9 +407,9 @@ def download_speed(
             "average_kib": int(average_kib),
             "median_kib": int(median_kib),
             "variation_coefficient": round(variation, 3),
-            "stable": variation <= 0.25,
+            "stable": variation <= MAX_ACCEPTABLE_VARIATION,
             "windows_kib": [int(value) for _, _, value in windows],
-            "sampled_seconds": round(time.monotonic() - response_started, 2),
+            "sampled_seconds": round(sampled_seconds, 2),
             "request_count": request_count,
             "colo": colo,
         }
@@ -644,6 +692,12 @@ def apply_ips(assignments):
 
     content = CONFIG_FILE.read_text(encoding="utf-8")
     document = yaml.safe_load(content) or {}
+    defaults = document.get("defaults") or {}
+    default_ips = [
+        value.strip()
+        for value in str(defaults.get("cfip", "")).split(",")
+        if value.strip()
+    ]
     known_names = {
         row.split("|", 1)[0].strip()
         for row in document.get("nodes", [])
@@ -667,7 +721,19 @@ def apply_ips(assignments):
             continue
         while len(fields) < 4:
             fields.append("")
-        fields[3] = assignments[fields[0]]
+        assigned_ips = assignments[fields[0]]
+        if isinstance(assigned_ips, (list, tuple)):
+            assigned_ips = [str(value).strip() for value in assigned_ips if str(value).strip()]
+        else:
+            assigned_ips = [str(assigned_ips).strip()] if str(assigned_ips).strip() else []
+        existing_ips = [
+            value.strip()
+            for value in fields[3].split(",")
+            if value.strip()
+        ]
+        # Keep the known configuration as fallback: HTTP speed alone does not
+        # prove that a CF edge will carry this node's WebSocket tunnel reliably.
+        fields[3] = ",".join(dict.fromkeys(assigned_ips + existing_ips + default_ips))
         new_row = "|".join(fields)
         newline = match.group(4) or ""
         updated_lines.append(
@@ -691,16 +757,25 @@ def apply_ips(assignments):
             pass
         raise
     for node_name in assignments:
-        print("updated %s CF IP in x-tunnel.yaml; x-tunnel will reload automatically" % node_name)
+        print(
+            "updated %s CF IP in x-tunnel.yaml with configured fallback IPs; "
+            "x-tunnel will reload automatically" % node_name
+        )
 
 
 def configured_node_names():
     import yaml
 
     document = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    nodes = document.get("nodes") or []
+    if not isinstance(nodes, list):
+        raise ValueError("nodes must be a list of pipe-delimited strings")
+    max_nodes = document.get("max_nodes", 5)
+    if isinstance(max_nodes, bool) or not isinstance(max_nodes, int) or max_nodes < 1:
+        raise ValueError("max_nodes must be a positive integer")
     return [
         row.split("|", 1)[0].strip()
-        for row in document.get("nodes", [])
+        for row in nodes[:max_nodes]
         if isinstance(row, str) and "|" in row and row.split("|", 1)[0].strip()
     ]
 
@@ -770,20 +845,246 @@ def candidate_region_rank(node_name, candidate):
     if city_colos:
         if colo in city_colos:
             return city_colos.index(colo)
-        candidate_country = COLO_REGIONS.get(colo)
-        if candidate_country == "US":
-            return len(city_colos)
-        if candidate_country:
-            nearby = REGION_FALLBACKS.get(region, (region,))
-            if candidate_country in nearby:
-                return len(city_colos) + 1 + nearby.index(candidate_country)
     candidate_country = COLO_REGIONS.get(colo)
     if region and candidate_country:
         nearby = REGION_FALLBACKS.get(region, (region,))
         if candidate_country in nearby:
-            return nearby.index(candidate_country)
-        return len(nearby) + 1
+            country_rank = nearby.index(candidate_country)
+        else:
+            country_rank = len(nearby) + 1
+        if city_colos:
+            return len(city_colos) + 1 + country_rank
+        return country_rank
     return 100
+
+
+def candidate_allowed_for_node(node_name, candidate):
+    region = node_region(node_name)
+    colo = str(candidate.get("colo", "")).upper()
+    if region == "HK":
+        return colo == "HKG"
+    candidate_macro_region = colo_macro_region(colo)
+    if region in {"JP", "TW", "SG", "KR"}:
+        return candidate_macro_region == "asia"
+    if region in {"US", "CA"}:
+        return candidate_macro_region == "north_america"
+    return True
+
+
+def supplemental_candidate_ips(ip_version, node_names, history_days=30, per_node=MAX_NODE_CF_IPS + 1):
+    import yaml
+
+    candidates = []
+    try:
+        document = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+        max_nodes = document.get("max_nodes", 5)
+        for row in (document.get("nodes") or [])[:max_nodes]:
+            if not isinstance(row, str):
+                continue
+            fields = [field.strip() for field in row.split("|")]
+            if len(fields) < 4:
+                continue
+            for value in fields[3].split(","):
+                try:
+                    address = ipaddress.ip_address(value.strip())
+                except ValueError:
+                    continue
+                if address.version == ip_version:
+                    candidates.append(str(address))
+    except (OSError, TypeError, ValueError):
+        pass
+
+    cutoff = time.time() - history_days * 86400
+    historical = {}
+    for path in sorted(DATA_DIR.glob("scan-*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            modified = path.stat().st_mtime
+            if modified < cutoff:
+                continue
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        records = list(report.get("candidates", []))
+        records.extend(
+            attempt
+            for test_round in report.get("speed_test_rounds", [])
+            for attempt in test_round.get("results", [])
+        )
+        for record in records:
+            if not isinstance(record, dict) or not record.get("ip"):
+                continue
+            try:
+                address = ipaddress.ip_address(record["ip"])
+            except ValueError:
+                continue
+            if address.version != ip_version:
+                continue
+            colo = str(record.get("colo") or record.get("rtt_colo") or "").upper()
+            stable_kib = record.get("stable_kib_per_second")
+            speed_mbps = record.get("stable_mbps")
+            if speed_mbps is None and stable_kib is not None:
+                speed_mbps = float(stable_kib) * 1024 * 8 / 1_000_000
+            try:
+                speed_mbps = float(speed_mbps)
+                variation = float(record.get("variation_coefficient", 0))
+            except (TypeError, ValueError):
+                continue
+            if (not colo or record.get("stable") is not True
+                    or speed_mbps < MIN_APPLY_SPEED_MBPS
+                    or variation > MAX_ACCEPTABLE_VARIATION):
+                continue
+            existing = historical.get(str(address))
+            if existing is None or modified > existing["modified"]:
+                historical[str(address)] = {
+                    "ip": str(address),
+                    "colo": colo,
+                    "stable_mbps": speed_mbps,
+                    "variation_coefficient": variation,
+                    "modified": modified,
+                }
+
+    for name in node_names:
+        eligible = [
+            item for item in historical.values()
+            if candidate_allowed_for_node(name, item)
+        ]
+        eligible.sort(key=lambda item: (
+            candidate_region_rank(name, item),
+            -item["stable_mbps"],
+            -item["modified"],
+        ))
+        candidates.extend(item["ip"] for item in eligible[:per_node])
+    return list(dict.fromkeys(candidates))
+
+
+def colo_macro_region(colo):
+    country = COLO_REGIONS.get(str(colo or "").upper())
+    if country in {"HK", "JP", "SG", "KR", "TW"}:
+        return "asia"
+    if country in {"US", "CA"}:
+        return "north_america"
+    return None
+
+
+def select_rtt_candidates(results, node_names, limit):
+    ranked = sorted(results, key=lambda item: item["latency_ms"])
+    active_regions = set()
+    for name in node_names:
+        region = node_region(name)
+        if region in {"HK", "JP", "SG", "KR", "TW", "US", "CA"}:
+            active_regions.add(region)
+
+    selected = []
+    selected_ips = set()
+    region_labels = {
+        "HK": "香港",
+        "JP": "日本",
+        "SG": "新加坡",
+        "KR": "韩国",
+        "TW": "台湾",
+        "US": "美国",
+        "CA": "加拿大",
+    }
+    for region in ("HK", "JP", "SG", "KR", "TW", "US", "CA"):
+        if region not in active_regions:
+            continue
+        regional = min(
+            (
+                item for item in ranked
+                if item["ip"] not in selected_ips
+                and candidate_allowed_for_node(region_labels[region], item)
+            ),
+            key=lambda item: (
+                candidate_region_rank(region_labels[region], item),
+                item["latency_ms"],
+            ),
+            default=None,
+        )
+        if regional is not None and regional["ip"] not in selected_ips:
+            selected.append(regional)
+            selected_ips.add(regional["ip"])
+        if len(selected) >= limit:
+            return selected[:limit]
+    selected.extend(item for item in ranked if item["ip"] not in selected_ips)
+    return selected[:limit]
+
+
+def prioritized_target_nodes(node_names, count):
+    priority = {"HK": 0, "US": 1, "JP": 2, "SG": 3, "KR": 4, "TW": 5, "CA": 6}
+    indexed = list(enumerate(node_names))
+    indexed.sort(key=lambda pair: (priority.get(node_region(pair[1]), 20), pair[0]))
+    return [name for _, name in indexed[:count]]
+
+
+def candidate_matches_node_region(node_name, candidate):
+    region = node_region(node_name)
+    colo_country = COLO_REGIONS.get(str(candidate.get("colo", "")).upper())
+    return bool(region and colo_country == region)
+
+
+def matching_nodes_for_colo(colo, node_names):
+    normalized_colo = str(colo or "").upper()
+    candidate = {"colo": normalized_colo}
+    candidate_country = COLO_REGIONS.get(normalized_colo)
+    candidate_macro_region = colo_macro_region(normalized_colo)
+    if not candidate_country or not candidate_macro_region:
+        return []
+
+    node_macro_regions = {
+        "asia": {"HK", "JP", "TW", "SG", "KR"},
+        "north_america": {"US", "CA"},
+    }
+    return [
+        name for name in node_names
+        if candidate_allowed_for_node(name, candidate)
+        and node_region(name) in REGION_FALLBACKS
+        and candidate_country in REGION_FALLBACKS[node_region(name)]
+        and node_region(name) in node_macro_regions[candidate_macro_region]
+    ]
+
+
+def next_speedtest_batch(candidates, attempted_ips, target_nodes, limit=IPS_PER_REGIONAL_ROUND):
+    available = [item for item in candidates if item["ip"] not in attempted_ips]
+    pairs = []
+    for node_index, name in enumerate(target_nodes):
+        for candidate in available:
+            if not candidate_allowed_for_node(name, candidate):
+                continue
+            pairs.append((
+                not candidate_matches_node_region(name, candidate),
+                node_index,
+                candidate_region_rank(name, candidate),
+                candidate["latency_ms"],
+                candidate["ip"],
+                candidate,
+            ))
+    pairs.sort(key=lambda pair: pair[:-1])
+
+    batch = []
+    assigned_nodes = set()
+    assigned_ips = set()
+    for _, node_index, _, _, candidate_ip, candidate in pairs:
+        if node_index in assigned_nodes or candidate_ip in assigned_ips:
+            continue
+        batch.append(candidate)
+        assigned_nodes.add(node_index)
+        assigned_ips.add(candidate_ip)
+        if len(batch) >= limit:
+            break
+    if len(batch) < limit:
+        batch.extend(
+            item for item in available
+            if item["ip"] not in assigned_ips
+        )
+        batch = batch[:limit]
+    return batch
+
+
+def exact_region_coverage(assignments, target_nodes):
+    return all(
+        name in assignments and candidate_matches_node_region(name, assignments[name])
+        for name in target_nodes
+    )
 
 
 def regionally_select(candidates, node_names, count):
@@ -804,6 +1105,8 @@ def regionally_select(candidates, node_names, count):
         (candidate_region_rank(name, candidate), candidate_index, node_index)
         for candidate_index, candidate in enumerate(ranked)
         for node_index, name in enumerate(node_names)
+        if candidate_allowed_for_node(name, candidate)
+        and candidate_matches_node_region(name, candidate)
     ]
     pairs.sort()
     assigned_nodes = set()
@@ -819,8 +1122,27 @@ def regionally_select(candidates, node_names, count):
         if len(assignments) >= min(count, len(node_names), len(ranked)):
             break
 
-    selected = [assignments[name] for name in node_names if name in assignments]
-    assigned_ids = {id(candidate) for candidate in selected}
+    for node_index, name in enumerate(node_names):
+        if node_index in assigned_nodes:
+            continue
+        eligible = [
+            (candidate_region_rank(name, candidate), candidate_index, candidate)
+            for candidate_index, candidate in enumerate(ranked)
+            if candidate_allowed_for_node(name, candidate)
+        ]
+        if not eligible:
+            continue
+        _, _, candidate = min(eligible, key=lambda item: (item[0], item[1]))
+        assignments[name] = candidate
+        assigned_nodes.add(node_index)
+
+    selected = []
+    assigned_ids = set()
+    for name in node_names:
+        candidate = assignments.get(name)
+        if candidate is not None and id(candidate) not in assigned_ids:
+            selected.append(candidate)
+            assigned_ids.add(id(candidate))
     selected.extend(
         candidate for candidate in ranked
         if id(candidate) not in assigned_ids
@@ -840,14 +1162,63 @@ def select_candidates(measured, tiers_mbps, count, node_names=None):
             item["latency_ms"],
         ),
     )
+    writeable = [
+        item for item in ranked
+        if item.get("stable", False)
+        and item["stable_kib"] * 1024 * 8 / 1_000_000 >= MIN_APPLY_SPEED_MBPS
+    ]
     for tier in tiers_mbps:
-        threshold_kib = tier * 1_000_000 / 8 / 1024
-        qualified = [item for item in ranked if item["stable_kib"] >= threshold_kib]
+        threshold_kib = max(tier, MIN_APPLY_SPEED_MBPS) * 1_000_000 / 8 / 1024
+        qualified = [item for item in writeable if item["stable_kib"] >= threshold_kib]
         if len(qualified) >= count:
             selected, assignments = regionally_select(qualified, node_names or [], count)
             return selected, tier, True, assignments
-    selected, assignments = regionally_select(ranked, node_names or [], count)
+    selected, assignments = regionally_select(writeable, node_names or [], count)
     return selected, tiers_mbps[-1], False, assignments
+
+
+def writeable_candidates(measured):
+    return [
+        item for item in measured
+        if item.get("stable", False)
+        and item["stable_kib"] * 1024 * 8 / 1_000_000 >= MIN_APPLY_SPEED_MBPS
+    ]
+
+
+def has_node_ip_failover_coverage(measured, node_names, count=MAX_NODE_CF_IPS):
+    eligible_candidates = writeable_candidates(measured)
+    return bool(node_names) and all(
+        len({item["ip"] for item in eligible_candidates if candidate_allowed_for_node(name, item)}) >= count
+        for name in node_names
+    )
+
+
+def build_node_ip_assignments(measured, primary_assignments, max_ips=MAX_NODE_CF_IPS):
+    eligible_candidates = writeable_candidates(measured)
+    assignments = {}
+    for name, primary in primary_assignments.items():
+        eligible = [
+            item for item in eligible_candidates
+            if candidate_allowed_for_node(name, item)
+        ]
+        eligible.sort(key=lambda item: (
+            candidate_region_rank(name, item),
+            not item.get("stable", True),
+            -item["stable_kib"],
+            -item.get("median_kib", item.get("average_kib", item["stable_kib"])),
+            item.get("variation_coefficient", 0),
+            item["latency_ms"],
+        ))
+        ordered = [primary] + [item for item in eligible if item["ip"] != primary["ip"]]
+        assigned_ips = []
+        for item in ordered:
+            if item["ip"] not in assigned_ips:
+                assigned_ips.append(item["ip"])
+            if len(assigned_ips) >= max_ips:
+                break
+        if assigned_ips:
+            assignments[name] = assigned_ips
+    return assignments
 
 
 def save_report(report):
@@ -893,9 +1264,12 @@ def notification_text(report, error=None):
         result = report.get("result") or {}
         ip = report.get("ip", "未知")
         if error or not result:
-            return "❌ CF 单 IP 测速失败\nIP：%s\n原因：%s" % (ip, error or "未收到有效下载数据")
+            reason = report.get("measurement_error") or error or "未收到有效下载数据"
+            sampled = report.get("sampled_seconds")
+            suffix = "\n有效采样：%.1f/30 秒" % sampled if sampled is not None else ""
+            return "❌ CF 单 IP 测速无效\nIP：%s\n原因：%s%s" % (ip, reason, suffix)
         stability = "稳定" if result.get("stable") else "波动较大"
-        return "\n".join((
+        lines = [
             "✅ CF 单 IP 测速完成",
             "IP：%s" % ip,
             "30 秒测速；取第 5–30 秒窗口均速：%.2f Mbps" % result["average_mbps"],
@@ -905,28 +1279,46 @@ def notification_text(report, error=None):
             "Cloudflare Colo：%s；TCP 建连：%s ms" % (
                 result.get("colo") or "未知", result.get("tcp_ms", "未知"),
             ),
-            "未执行节点选择或写入配置。",
-        ))
+        ]
+        applied = report.get("applied_nodes", {})
+        if applied:
+            lines.append("已写入匹配地区节点：")
+            lines.extend("  %s → %s" % (name, address) for name, address in applied.items())
+        else:
+            lines.append("未修改节点配置：%s" % report.get(
+                "apply_reason", "未达到写入条件，保留原 CF IP。",
+            ))
+        if report.get("apply_error"):
+            lines.append("配置写入失败：%s" % report["apply_error"])
+        if report.get("report_path"):
+            lines.append("报告：%s" % report["report_path"])
+        return "\n".join(lines)
 
     candidate_rows = report.get("candidates", [])
     rtt_passed = sum(row.get("latency_ms") is not None for row in candidate_rows)
+    speed_attempt_count = sum(len(row.get("speed_test_attempts", [])) for row in candidate_rows)
     speed_rows = [
         row for row in candidate_rows
-        if row.get("status") in ("measured", "speed_test_failed", "early_discard")
+        if row.get("speed_test_attempts") or row.get("status") in (
+            "measured", "speed_test_failed", "early_discard", "incomplete",
+        )
     ]
     selected_tier = report.get("selected_tier_mbps")
-    reached = report.get("met_target_count_at_tier", False)
+    nodes_missing_fallback = report.get("nodes_missing_fallback_ip", [])
+    reached = report.get("met_target_count_at_tier", False) and not nodes_missing_fallback
     if error:
         title = "❌ X-Tunnel CF测速/写入失败"
     elif reached:
         title = "✅ X-Tunnel CF测速完成"
+    elif report.get("met_target_count_at_tier", False):
+        title = "⚠️ 测速达到速度目标，但部分节点缺少备用 IP"
     else:
         title = "⚠️ X-Tunnel CF测速完成，未满足目标数量/档位"
 
     lines = [
         title,
-        "扫描候选：%d，RTT有效：%d，完整测速：%d" % (
-            len(candidate_rows), rtt_passed, len(speed_rows),
+        "扫描候选：%d，RTT有效：%d，下载测速尝试：%d" % (
+            len(candidate_rows), rtt_passed, speed_attempt_count,
         ),
     ]
     if selected_tier is not None:
@@ -934,6 +1326,29 @@ def notification_text(report, error=None):
             selected_tier,
             ", ".join(report.get("selected_ips", [])) or "无",
         ))
+    regional_assignments = report.get("regional_assignments", {})
+    if regional_assignments:
+        lines.append("地区分配：")
+        for name, assignment in regional_assignments.items():
+            match_type = "地区直配" if assignment.get("direct_region_match") else "邻近回退"
+            fallbacks = assignment.get("fallback_ips", [])
+            fallback_summary = "；备用 " + ", ".join(
+                "%s[%s]" % (item["ip"], item.get("colo") or "未知")
+                for item in fallbacks
+            ) if fallbacks else ""
+            lines.append("  %s → %s[%s]（%s）" % (
+                name,
+                assignment.get("ip", ""),
+                assignment.get("colo", "未知"),
+                match_type,
+            ) + fallback_summary)
+    if nodes_missing_fallback:
+        lines.append("备用 IP 不足（仅写入已测合格地址）：%s" % ", ".join(nodes_missing_fallback))
+    preserved_nodes = report.get("preserved_nodes", [])
+    if preserved_nodes:
+        reasons = report.get("preserved_node_reasons", {})
+        lines.append("未写入（保留原 CF IP）：")
+        lines.extend("  %s：%s" % (name, reasons.get(name, "无可用匹配 IP")) for name in preserved_nodes)
     applied = report.get("applied_nodes", {})
     apply_mode = report.get("apply_mode")
     if applied:
@@ -970,6 +1385,10 @@ def notification_text(report, error=None):
                         attempt["ip"],
                         attempt.get("early_speed_mbps", 0),
                         attempt.get("best_case_average_mbps", 0),
+                    ))
+                elif attempt.get("status") == "incomplete":
+                    lines.append("× %s 采样不完整（%.1f秒），不计入候选" % (
+                        attempt["ip"], attempt.get("sampled_seconds", 0),
                     ))
                 else:
                     lines.append("× %s 下载测速失败" % attempt["ip"])
@@ -1012,16 +1431,18 @@ def split_telegram_message(text, limit=3500):
     return chunks
 
 
-def run_single_ip(ip, progress):
+def run_single_ip(ip, progress, use_tls=False):
     address = ipaddress.ip_address(ip)
     ip = str(address)
     report = {
         "mode": "single-ip",
         "ip": ip,
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "duration_seconds": 30,
+        "duration_seconds": DEFAULT_SPEED_DURATION,
         "warmup_seconds": 5,
-        "apply_mode": "disabled",
+        "apply_mode": "matching-region-if-at-least-100-mbps",
+        "apply_threshold_mbps": MIN_RETRY_SPEED_MBPS,
+        "maximum_apply_variation_coefficient": MAX_ACCEPTABLE_VARIATION,
     }
     lock_path = Path(SCAN_LOCK_FILE)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1034,14 +1455,19 @@ def run_single_ip(ip, progress):
         progress.update("🔎 CF 单 IP 测速\nIP：%s\n准备直连路由；测速 30 秒，前 5 秒作为热身。" % ip, force=True)
         with DirectCandidateRoutes([ip]):
             _, domain, request_path = parse_speed_url(None, False)
-            scheme = "https" if os.environ.get("X_TUNNEL_SINGLE_TEST_TLS", "0") == "1" else "http"
+            scheme = "https" if use_tls else "http"
+            report.update({
+                "scheme": scheme,
+                "speed_test_host": domain,
+                "speed_test_path": request_path,
+            })
             measurement = download_speed(
                 ip,
                 scheme,
                 domain,
                 request_path,
                 scheme == "https",
-                duration=30.0,
+                duration=DEFAULT_SPEED_DURATION,
                 discard_after=5.0,
                 minimum_speed_mbps=0.0,
                 early_discard_after=30.0,
@@ -1050,7 +1476,12 @@ def run_single_ip(ip, progress):
                 allow_early_discard=False,
                 require_discard_window=True,
             )
-        if measurement:
+        if measurement and measurement.get("status") == "incomplete":
+            report["status"] = "incomplete"
+            report["sampled_seconds"] = measurement["sampled_seconds"]
+            report["measurement_error"] = "连接提前中断，未完成 30 秒采样；结果无效且不会写入节点。"
+            report["apply_reason"] = "采样不完整，保留原 CF IP。"
+        elif measurement:
             result = {
                 "average_mbps": round(measurement["average_kib"] * 1024 * 8 / 1_000_000, 2),
                 "median_mbps": round(measurement["median_kib"] * 1024 * 8 / 1_000_000, 2),
@@ -1064,8 +1495,37 @@ def run_single_ip(ip, progress):
             }
             report["result"] = result
             report["status"] = "measured"
+            apply_reasons = []
+            if result["average_mbps"] < MIN_RETRY_SPEED_MBPS:
+                apply_reasons.append("均速未达到 %.0f Mbps" % MIN_RETRY_SPEED_MBPS)
+            if not result["stable"]:
+                apply_reasons.append("波动系数 %.1f%% 超过 %.0f%% 稳定性上限" % (
+                    result["variation_coefficient"] * 100,
+                    MAX_ACCEPTABLE_VARIATION * 100,
+                ))
+            if apply_reasons:
+                report["apply_reason"] = "；".join(apply_reasons) + "，保留原 CF IP。"
+            else:
+                try:
+                    matching_nodes = matching_nodes_for_colo(
+                        result["colo"], configured_node_names(),
+                    )
+                    if not matching_nodes:
+                        report["apply_reason"] = "没有与 %s colo 匹配的已配置节点，保留原 CF IP。" % (
+                            result["colo"] or "未知",
+                        )
+                    else:
+                        assignments = {name: ip for name in matching_nodes}
+                        apply_ips(assignments)
+                        report["applied_nodes"] = assignments
+                        report["apply_status"] = "applied"
+                except Exception as error:
+                    report["apply_error"] = str(error)
+                    report["apply_reason"] = "节点配置未更改，保留原 CF IP。"
         else:
             report["status"] = "failed"
+            report["measurement_error"] = "连接或下载失败，未获得有效测速窗口。"
+            report["apply_reason"] = "测速失败，保留原 CF IP。"
         report["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1088,13 +1548,19 @@ def main():
     parser.add_argument("--workers", type=int, default=50, help="parallel TCP/TLS latency probes")
     parser.add_argument("--target-mbps", type=int, default=get_target_mbps(), help="primary speed target in Mbps; fallback tiers descend by 50 Mbps to 100")
     parser.add_argument("--tiers-mbps", help="legacy override: comma-separated descending speed tiers")
-    parser.add_argument("--target-count", type=int, default=2, help="number of IPs to find")
-    parser.add_argument("--speed-duration", type=float, default=20.0, help="maximum download test seconds per IP (15-30)")
+    parser.add_argument(
+        "--target-count", type=int, default=None,
+        help="number of IPs to find (default: up to three, based on active node count)",
+    )
+    parser.add_argument(
+        "--speed-duration", type=float, default=DEFAULT_SPEED_DURATION,
+        help="maximum download test seconds per IP (15-30; default 30)",
+    )
     parser.add_argument("--discard-after", type=float, default=5.0, help="initial seconds excluded from stable-speed windows")
     parser.add_argument("--tls", action="store_true", help="probe Cloudflare HTTPS on port 443 instead of HTTP on port 80")
     parser.add_argument("--speed-url", help="override the APK's cached speed-test URL")
     parser.add_argument("--refresh-data", action="store_true", help="also refresh the speed-test URL; CF IP ranges refresh every run")
-    parser.add_argument("--single-ip", metavar="IP", help="run a standalone 30-second test for one IP; never changes node configuration")
+    parser.add_argument("--single-ip", metavar="IP", help="test one IP for 30 seconds using the same URL and --tls setting; apply it to matching-region nodes if mean speed is at least 100 Mbps")
     apply_options = parser.add_mutually_exclusive_group()
     apply_options.add_argument("--apply", action="append", metavar="NODE_NAME", help="target specific node(s); repeat to select multiple")
     apply_options.add_argument("--no-apply", action="store_true", help="do not write selected IPs to x-tunnel.yaml")
@@ -1106,9 +1572,12 @@ def main():
         error_text = None
         exit_code = 0
         try:
-            report = run_single_ip(args.single_ip, progress)
+            report = run_single_ip(args.single_ip, progress, args.tls)
             if report["status"] != "measured":
-                error_text = "连接或下载失败；请检查 IP、网络与 ShellCrash 直连路由。"
+                error_text = report.get(
+                    "measurement_error",
+                    "连接或下载失败；请检查 IP、网络与 ShellCrash 直连路由。",
+                )
                 exit_code = 1
         except Exception as error:
             error_text = str(error)
@@ -1121,6 +1590,17 @@ def main():
             if report.get("report_path"):
                 print("report: %s" % report["report_path"], flush=True)
         return exit_code
+
+    try:
+        node_names = args.apply if args.apply else configured_node_names()
+    except (OSError, ValueError) as error:
+        parser.error("could not read active x-tunnel nodes: %s" % error)
+    if args.target_count is None:
+        if args.apply:
+            args.target_count = len(args.apply)
+        else:
+            args.target_count = min(3, len(node_names)) if node_names else 2
+    target_nodes = prioritized_target_nodes(node_names, args.target_count)
 
     if args.tiers_mbps:
         try:
@@ -1154,11 +1634,14 @@ def main():
 
             progress.update("🔄 正在更新 IPv%d Cloudflare IP 段数据…" % args.family, force=True)
             candidates = make_candidates(args.family, args.limit, args.ip or [], True)
+            supplemental_ips = [] if args.ip else supplemental_candidate_ips(args.family, node_names)
+            candidates = list(dict.fromkeys(candidates + supplemental_ips))
             with DirectCandidateRoutes(candidates):
                 report = {
                     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "ip_data_refreshed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "ip_data_source": "manual --ip list" if args.ip else IP_LIST_URLS[args.family],
+                    "supplemental_candidate_ips": supplemental_ips,
                     "family": args.family,
                     "tiers_mbps": tiers_mbps,
                     "target_count": args.target_count,
@@ -1184,10 +1667,13 @@ def main():
                     "rtt_candidates_for_download": args.top,
                     "rtt_workers": args.workers,
                     "minimum_retry_speed_mbps": MIN_RETRY_SPEED_MBPS,
-                    "early_discard_speed_mbps": MIN_RETRY_SPEED_MBPS,
+                    "minimum_apply_speed_mbps": MIN_APPLY_SPEED_MBPS,
+                    "early_discard_speed_mbps": MIN_APPLY_SPEED_MBPS,
                     "early_discard_seconds": EARLY_DISCARD_SECONDS,
-                    "stable_window_policy": "mean of 1-second windows after warmup; CV <= 0.25 is stable; stable candidates rank first, then mean, median, CV, latency",
-                    "maximum_speed_test_rounds": MAX_LOW_SPEED_ROUNDS,
+                    "stable_window_policy": "mean of 1-second windows after warmup; CV <= 0.25 required for applying; stable candidates rank by mean, median, CV, latency",
+                    "maximum_apply_variation_coefficient": MAX_ACCEPTABLE_VARIATION,
+                    "maximum_regional_rounds": MAX_REGIONAL_ROUNDS,
+                    "ips_per_regional_round": IPS_PER_REGIONAL_ROUND,
                 })
                 port = 443 if args.tls else 80
                 print("RTT probing %d IPv%d candidate(s) on TCP/%d..." % (len(candidates), args.family, port), flush=True)
@@ -1200,50 +1686,81 @@ def main():
                     }
                     for future in concurrent.futures.as_completed(future_to_ip):
                         rtt_completed += 1
-                        latency = future.result()
-                        if latency is not None:
+                        measurement = future.result()
+                        if measurement is not None:
                             ip = future_to_ip[future]
-                            results.append({"ip": ip, "latency_ms": latency})
-                            records_by_ip[ip].update({"status": "rtt_passed", "latency_ms": latency})
+                            result = {
+                                "ip": ip,
+                                "latency_ms": measurement["latency_ms"],
+                                "colo": measurement["colo"],
+                            }
+                            results.append(result)
+                            records_by_ip[ip].update({
+                                "status": "rtt_passed",
+                                "latency_ms": measurement["latency_ms"],
+                                "rtt_colo": measurement["colo"],
+                            })
                         else:
                             records_by_ip[future_to_ip[future]]["status"] = "rtt_failed"
                         progress.update("📡 RTT 筛选中：%d/%d\n有效：%d，正在保留低延迟候选" % (
                             rtt_completed, len(candidates), len(results),
                         ))
-                results.sort(key=lambda result: result["latency_ms"])
-                for result in results[args.top:]:
-                    records_by_ip[result["ip"]]["status"] = "rtt_passed_not_speed_tested"
-                results = results[:args.top]
+                ranked_results = sorted(results, key=lambda result: result["latency_ms"])
+                results = select_rtt_candidates(ranked_results, target_nodes, args.top)
+                selected_rtt_ips = {result["ip"] for result in results}
+                for result in ranked_results:
+                    if result["ip"] not in selected_rtt_ips:
+                        records_by_ip[result["ip"]]["status"] = "rtt_passed_not_speed_tested"
+                report["rtt_region_counts"] = {
+                    region: sum(colo_macro_region(item.get("colo")) == region for item in ranked_results)
+                    for region in ("asia", "north_america")
+                }
+                report["rtt_selected_region_counts"] = {
+                    region: sum(colo_macro_region(item.get("colo")) == region for item in results)
+                    for region in ("asia", "north_america")
+                }
+                report["rtt_selection_policy"] = (
+                    "prioritize observed colo regions for target nodes, with HK then North America preferred; "
+                    "remaining candidates are ordered by RTT"
+                )
                 if not results:
                     report["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                     report_path = save_report(report)
                     print("full candidate report: %s" % report_path, flush=True)
                     raise RuntimeError("no candidate passed three CF-RAY RTT probes")
 
-                print("%d candidate(s) passed RTT; testing up to %.0fs each with %.0fs warm-up" % (
-                    len(results), args.speed_duration, args.discard_after,
+                print("%d candidate(s) passed RTT; testing up to %d new IPs per round for %d rounds, %.0fs each" % (
+                    len(results), IPS_PER_REGIONAL_ROUND, MAX_REGIONAL_ROUNDS, args.speed_duration,
                 ), flush=True)
                 best_by_ip = {}
+                attempted_ips = set()
                 report["speed_test_rounds"] = []
-                for round_number in range(1, MAX_LOW_SPEED_ROUNDS + 1):
+                for round_number in range(1, MAX_REGIONAL_ROUNDS + 1):
+                    batch = next_speedtest_batch(results, attempted_ips, target_nodes)
+                    if not batch:
+                        break
                     round_report = {"round": round_number, "results": []}
                     round_measured = []
-                    print("Bandwidth test round %d/%d..." % (round_number, MAX_LOW_SPEED_ROUNDS), flush=True)
-                    for index, result in enumerate(results, 1):
+                    round_report["candidate_ips"] = [item["ip"] for item in batch]
+                    print("Bandwidth test round %d/%d (%d new IPs)..." % (
+                        round_number, MAX_REGIONAL_ROUNDS, len(batch),
+                    ), flush=True)
+                    for index, result in enumerate(batch, 1):
+                        attempted_ips.add(result["ip"])
                         record = records_by_ip[result["ip"]]
                         record["status"] = "speed_test_running"
                         measurement = download_speed(
                             result["ip"], scheme, domain, request_path, scheme == "https",
                             duration=args.speed_duration,
                             discard_after=args.discard_after,
-                            minimum_speed_mbps=MIN_RETRY_SPEED_MBPS,
+                            minimum_speed_mbps=MIN_APPLY_SPEED_MBPS,
                             progress_callback=progress.update,
                             progress_label="第%d轮 %d/%d · %s" % (
-                                round_number, index, len(results), result["ip"],
+                                round_number, index, len(batch), result["ip"],
                             ),
                         )
                         progress.update("⚡ 第%d轮测速：完成 %d/%d 个候选\n当前测速：%s" % (
-                            round_number, index, len(results), result["ip"],
+                            round_number, index, len(batch), result["ip"],
                         ), force=True)
                         attempt = {"ip": result["ip"], "latency_ms": result["latency_ms"]}
                         if measurement is None:
@@ -1252,7 +1769,22 @@ def main():
                             record.setdefault("speed_test_attempts", []).append(attempt.copy())
                             if result["ip"] not in best_by_ip:
                                 record["status"] = "speed_test_failed"
-                            print("[%d/%d] %s: download test failed" % (index, len(results), result["ip"]), flush=True)
+                            print("[%d/%d] %s: download test failed" % (index, len(batch), result["ip"]), flush=True)
+                            continue
+                        if measurement.get("status") == "incomplete":
+                            attempt.update({
+                                "status": "incomplete",
+                                "sampled_seconds": measurement["sampled_seconds"],
+                                "request_count": measurement["request_count"],
+                                "colo": measurement.get("colo", ""),
+                            })
+                            round_report["results"].append(attempt)
+                            record.setdefault("speed_test_attempts", []).append(attempt.copy())
+                            if result["ip"] not in best_by_ip:
+                                record["status"] = "incomplete"
+                            print("[%d/%d] %s: incomplete sample %.1fs; rejected" % (
+                                index, len(batch), result["ip"], measurement["sampled_seconds"],
+                            ), flush=True)
                             continue
                         if measurement.get("status") == "early_discard":
                             attempt.update({
@@ -1269,7 +1801,7 @@ def main():
                                 record["status"] = "early_discard"
                             print("[%d/%d] %s: early discard; best-case final average %.1fMbps after %.1fs" % (
                                 index,
-                                len(results),
+                                len(batch),
                                 result["ip"],
                                 measurement["best_case_average_mbps"],
                                 measurement["sampled_seconds"],
@@ -1327,7 +1859,7 @@ def main():
                         print(
                             "[%d/%d] %s latency=%dms stable=%dKiB/s (~%.1fMbps) sampled=%.1fs windows=%s colo=%s" % (
                                 index,
-                                len(results),
+                                len(batch),
                                 measurement["ip"],
                                 measurement["latency_ms"],
                                 measurement["stable_kib"],
@@ -1340,19 +1872,39 @@ def main():
                         )
                     round_report["measured_count"] = len(round_measured)
                     qualified = sum(
-                        item["stable_kib"] * 1024 * 8 / 1_000_000 >= MIN_RETRY_SPEED_MBPS
+                        item["stable"]
+                        and item["stable_kib"] * 1024 * 8 / 1_000_000 >= MIN_RETRY_SPEED_MBPS
                         for item in round_measured
                     )
                     round_report["qualified_count"] = qualified
-                    round_report["result"] = "达标" if qualified >= args.target_count else "未凑齐%d个%dMbps节点" % (
-                        args.target_count, MIN_RETRY_SPEED_MBPS,
+                    _, interim_tier, interim_met, interim_assignments = select_candidates(
+                        list(best_by_ip.values()), tiers_mbps, args.target_count, target_nodes,
+                    )
+                    region_complete = exact_region_coverage(interim_assignments, target_nodes)
+                    failover_complete = has_node_ip_failover_coverage(
+                        list(best_by_ip.values()), node_names,
+                    )
+                    round_report["selected_tier_mbps"] = interim_tier
+                    round_report["met_target_count"] = interim_met
+                    round_report["reached_primary_tier"] = interim_met and interim_tier == tiers_mbps[0]
+                    round_report["exact_region_coverage"] = region_complete
+                    round_report["failover_ip_coverage"] = failover_complete
+                    round_report["result"] = (
+                        "目标速度、地区直配和备用 IP 覆盖满足"
+                        if interim_met and interim_tier == tiers_mbps[0] and region_complete and failover_complete
+                        else "继续补测地区/速度候选"
                     )
                     report["speed_test_rounds"].append(round_report)
-                    if qualified >= args.target_count:
+                    if interim_met and interim_tier == tiers_mbps[0] and region_complete and failover_complete:
                         break
-                    if round_number < MAX_LOW_SPEED_ROUNDS:
-                        print("Only %d/%d candidates reached %d Mbps; retrying..." % (
-                            qualified, args.target_count, MIN_RETRY_SPEED_MBPS,
+                    if round_number < MAX_REGIONAL_ROUNDS:
+                        missing_regions = [
+                            name for name in target_nodes
+                            if name not in interim_assignments
+                            or not candidate_matches_node_region(name, interim_assignments[name])
+                        ]
+                        print("Continuing regional/speed search; missing direct-region matches: %s" % (
+                            ", ".join(missing_regions) or "speed target",
                         ), flush=True)
                 measured = list(best_by_ip.values())
                 if not measured:
@@ -1360,21 +1912,64 @@ def main():
                     report_path = save_report(report)
                     print("full candidate report: %s" % report_path, flush=True)
                     raise RuntimeError("all bandwidth tests failed")
-                node_names = args.apply if args.apply else configured_node_names()
                 selected, tier, met_tier, regional_candidates = select_candidates(
                     measured, tiers_mbps, args.target_count, node_names,
                 )
+                node_ip_assignments = build_node_ip_assignments(measured, regional_candidates)
                 report["selected_tier_mbps"] = tier
-                report["met_target_count_at_tier"] = met_tier
+                unassigned_nodes = [name for name in node_names if name not in node_ip_assignments]
+                report["preserved_nodes"] = unassigned_nodes
+                report["preserved_node_reasons"] = {}
+                for name in unassigned_nodes:
+                    compatible = [item for item in measured if candidate_allowed_for_node(name, item)]
+                    if compatible:
+                        fastest = max(compatible, key=lambda item: item["stable_kib"])
+                        speed_mbps = fastest["stable_kib"] * 1024 * 8 / 1_000_000
+                        reasons = []
+                        if not fastest.get("stable", False):
+                            reasons.append("波动 CV %.0f%% 超过 %.0f%% 稳定性上限" % (
+                                fastest.get("variation_coefficient", 0) * 100,
+                                MAX_ACCEPTABLE_VARIATION * 100,
+                            ))
+                        if speed_mbps < MIN_APPLY_SPEED_MBPS:
+                            reasons.append("最高均速 %.1f Mbps，低于 %.0f Mbps 写入下限" % (
+                                speed_mbps, MIN_APPLY_SPEED_MBPS,
+                            ))
+                        if reasons:
+                            reason = "；".join(reasons)
+                        else:
+                            reason = "没有满足目标数量/地区分配条件的候选"
+                    elif node_region(name) == "HK":
+                        reason = "没有 HKG colo 候选；香港节点仅接受 HKG"
+                    else:
+                        reason = "没有可用的地区匹配候选"
+                    report["preserved_node_reasons"][name] = reason
+                nodes_missing_fallback = list(unassigned_nodes) + [
+                    name for name, addresses in node_ip_assignments.items()
+                    if len(addresses) < MAX_NODE_CF_IPS
+                ]
+                report["nodes_missing_fallback_ip"] = nodes_missing_fallback
+                report["met_target_count_at_tier"] = met_tier and not unassigned_nodes
                 report["regional_assignments"] = {
                     name: {
                         "ip": item["ip"],
+                        "fallback_ips": [
+                            {
+                                "ip": fallback_ip,
+                                "colo": next(
+                                    candidate.get("colo", "")
+                                    for candidate in measured if candidate["ip"] == fallback_ip
+                                ),
+                            }
+                            for fallback_ip in node_ip_assignments.get(name, [])[1:]
+                        ],
                         "colo": item.get("colo", ""),
                         "node_region": node_region(name),
+                        "direct_region_match": candidate_matches_node_region(name, item),
                     }
                     for name, item in regional_candidates.items()
                 }
-                tier_result = "达到" if tier == tiers_mbps[0] and met_tier else "回退到"
+                tier_result = "达到" if tier == tiers_mbps[0] and report["met_target_count_at_tier"] else "回退到"
                 chosen_summary = "；".join(
                     "%s[%s] %.1fMbps" % (
                         item["ip"], item.get("colo") or "未知",
@@ -1383,17 +1978,29 @@ def main():
                     for item in selected
                 ) or "无可用 IP"
                 regional_summary = "；".join(
-                    "%s → %s[%s]" % (name, item["ip"], item.get("colo") or "未知")
+                    "%s → %s[%s]%s" % (
+                        name,
+                        item["ip"],
+                        item.get("colo") or "未知",
+                        "；备用 " + ", ".join(node_ip_assignments.get(name, [])[1:])
+                        if len(node_ip_assignments.get(name, [])) > 1 else "",
+                    )
                     for name, item in regional_candidates.items()
                 ) or "无可匹配节点"
                 progress.update("📊 阶梯筛选完成：%s %.0f Mbps\n候选结果：%s\n地区匹配：%s\n正在写入节点配置" % (
                     tier_result, tier, chosen_summary, regional_summary,
                 ))
+                assigned_nodes_by_ip = {}
+                for node_name, addresses in node_ip_assignments.items():
+                    for address in addresses:
+                        assigned_nodes_by_ip.setdefault(address, []).append(node_name)
                 for item in selected:
-                    records_by_ip[item["ip"]]["selected"] = True
                     records_by_ip[item["ip"]]["selected_tier_mbps"] = tier
+                for address, assigned_node_names in assigned_nodes_by_ip.items():
+                    records_by_ip[address]["selected"] = True
+                    records_by_ip[address]["assigned_nodes"] = assigned_node_names
                 report["selected_ips"] = [item["ip"] for item in selected]
-                selected_ip_set = set(report["selected_ips"])
+                selected_ip_set = set(report["selected_ips"]) | set(assigned_nodes_by_ip)
                 for test_round in report.get("speed_test_rounds", []):
                     for attempt in test_round.get("results", []):
                         attempt["selected"] = attempt["ip"] in selected_ip_set
@@ -1408,13 +2015,9 @@ def main():
                         item["ip"], item["stable_kib"] * 1024 * 8 / 1_000_000,
                         item["latency_ms"], item["colo"],
                     ), flush=True)
-                if args.apply and len(args.apply) > len(selected):
-                    report["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    report_path = save_report(report)
-                    print("full candidate report: %s" % report_path, flush=True)
-                    raise RuntimeError("fewer selected IPs than --apply node names")
                 assignments = {
-                    node_name: item["ip"] for node_name, item in regional_candidates.items()
+                    node_name: ",".join(addresses)
+                    for node_name, addresses in node_ip_assignments.items()
                 } if not args.no_apply else {}
                 if assignments:
                     try:
@@ -1446,7 +2049,6 @@ def main():
         print("cfip_speedtest: %s" % error, file=sys.stderr)
     progress.finish(notification_report, scan_error)
     return exit_code
-
 
 if __name__ == "__main__":
     sys.exit(main())
