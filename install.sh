@@ -32,7 +32,7 @@ fi
 
 printf 'Detected platform: %s\n' "$PLATFORM"
 
-required_commands="ip sed install python3 uname"
+required_commands="ip sed cp chmod mkdir mv python3 uname"
 if [ "$OPENWRT" -eq 0 ]; then
     required_commands="$required_commands systemctl"
 fi
@@ -42,6 +42,14 @@ for command in $required_commands; do
         exit 1
     }
 done
+
+# BusyBox-based OpenWrt images may not provide GNU/coreutils 'install'.
+# Copy with a restrictive umask first so private configuration templates are
+# never briefly exposed before their final permissions are applied.
+copy_with_mode() {
+    (umask 077; cp "$1" "$2") || return 1
+    chmod "$3" "$2"
+}
 
 machine=$(uname -m)
 case "$machine" in
@@ -101,7 +109,7 @@ else
     if command -v curl >/dev/null 2>&1; then
         curl --fail --location --retry 3 --connect-timeout 20 "$download_url" --output "$downloaded_kernel"
     elif command -v wget >/dev/null 2>&1; then
-        wget --tries=3 --timeout=20 --output-document="$downloaded_kernel" "$download_url"
+        wget -T 20 -O "$downloaded_kernel" "$download_url"
     else
         echo "Install curl or wget to download the x-tunnel kernel." >&2
         exit 1
@@ -112,7 +120,7 @@ else
         echo "Downloaded x-tunnel kernel failed its startup check; it was not installed." >&2
         exit 1
     }
-    install -m 0755 "$downloaded_kernel" "$KERNEL_PATH.new"
+    copy_with_mode "$downloaded_kernel" "$KERNEL_PATH.new" 0755
     mv -f "$KERNEL_PATH.new" "$KERNEL_PATH"
     echo "Installed x-tunnel kernel for $machine from $KERNEL_REPOSITORY ($release)."
     rm -rf "$download_dir"
@@ -123,12 +131,12 @@ fi
     exit 1
 }
 [ -f "$PROJECT_DIR/speedtest-bot.env" ] || {
-    install -m 0600 "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env"
+    copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
     echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun." >&2
     exit 1
 }
 if [ ! -f "$PROJECT_DIR/project.env" ]; then
-    install -m 0644 "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env"
+    copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
 fi
 chmod 0600 "$PROJECT_DIR/speedtest-bot.env" "$PROJECT_DIR/x-tunnel.yaml"
 chmod 0644 "$PROJECT_DIR/project.env"
@@ -209,7 +217,8 @@ else
         for unit in $bypass_units; do
             dropin_dir="/etc/systemd/system/$unit.d"
             temporary="$dropin_dir/shellcrash-bypass.conf.tmp"
-            install -d -m 0755 "$dropin_dir"
+            mkdir -p "$dropin_dir"
+            chmod 0755 "$dropin_dir"
             printf '%s\n' '[Service]' 'Group=7890' > "$temporary"
             chmod 0644 "$temporary"
             mv -f "$temporary" "$dropin_dir/shellcrash-bypass.conf"
