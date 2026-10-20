@@ -203,6 +203,26 @@ else
         chmod 0644 "$temporary"
         mv -f "$temporary" "/etc/systemd/system/$unit"
     done
+
+    bypass_units="x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-single@.service"
+    if [ -r /etc/group ] && awk -F: '$1 == "shellcrash" && $3 == 7890 { found = 1 } END { exit !found }' /etc/group; then
+        for unit in $bypass_units; do
+            dropin_dir="/etc/systemd/system/$unit.d"
+            temporary="$dropin_dir/shellcrash-bypass.conf.tmp"
+            install -d -m 0755 "$dropin_dir"
+            printf '%s\n' '[Service]' 'Group=7890' > "$temporary"
+            chmod 0644 "$temporary"
+            mv -f "$temporary" "$dropin_dir/shellcrash-bypass.conf"
+        done
+        printf 'Detected ShellCrash bypass group (GID 7890); configured X-Tunnel and speed-test services to use it.\n'
+    else
+        for unit in $bypass_units; do
+            dropin="/etc/systemd/system/$unit.d/shellcrash-bypass.conf"
+            rm -f "$dropin" "$dropin.tmp"
+        done
+        printf 'ShellCrash bypass group (GID 7890) not found; X-Tunnel services keep the default group.\n'
+    fi
+
     systemctl daemon-reload
     systemctl enable x-tunnel.service x-tunnel-speedtest-bot.service
     for unit in x-tunnel.service x-tunnel-speedtest-bot.service; do

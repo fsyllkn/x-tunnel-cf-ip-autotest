@@ -9,6 +9,9 @@ PROJECT_DIR="@PROJECT_DIR@"
 start_service() {
 	procd_open_instance
 	procd_set_param command /usr/bin/python3 "$PROJECT_DIR/supervisor.py"
+	if grep -q '^shellcrash:[^:]*:7890:' /etc/group 2>/dev/null; then
+		procd_set_param group shellcrash
+	fi
 	procd_set_param env PYTHONDONTWRITEBYTECODE=1
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
