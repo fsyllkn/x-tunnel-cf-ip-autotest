@@ -419,9 +419,13 @@ def start_child(entry):
     try:
         uid = spec["process_uid"]
         workdir = child_workdir(spec)
+        child_env = os.environ.copy()
+        child_env["HOME"] = str(workdir)
+        child_env["XDG_CACHE_HOME"] = str(workdir)
         entry["process"] = subprocess.Popen(
             command_for(spec),
             cwd=str(workdir),
+            env=child_env,
             user=uid,
             group=uid,
             extra_groups=(),
