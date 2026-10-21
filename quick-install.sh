@@ -90,8 +90,15 @@ if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.exampl
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
 # Make the menu available even before the core service has been installed.
 if [ -f "$PROJECT_DIR/menu.sh" ]; then
- printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/xtunnel-menu
- chmod 0755 /usr/bin/xtunnel-menu
+ if [ -e /usr/bin/x-t ] || [ -L /usr/bin/x-t ]; then
+  grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/x-t 2>/dev/null || fail '/usr/bin/x-t is already used by another program.'
+ fi
+ printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/x-t
+ chmod 0755 /usr/bin/x-t
+ if [ -f /usr/bin/xtunnel-menu ] &&
+    grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/xtunnel-menu 2>/dev/null; then
+  rm -f /usr/bin/xtunnel-menu
+ fi
 fi
 if [ "$MENU_MODE" -eq 1 ]; then
  info 'Opening OpenWrt setup and management menu (core/Bot are optional).'
