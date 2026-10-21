@@ -42,6 +42,21 @@ sh /tmp/xtunnel-openwrt.sh --disable-bot
 
 首次启用 Bot 前，请在项目目录创建 `speedtest-bot.env`（可从 `speedtest-bot.env.example` 复制），设置 Token 与 Chat ID，并在 `project.env` 配置实际可用的 HTTP 代理。安装器会检查必需组件，使用 `apk` 或 `opkg` 补装缺失依赖，不自动卸载已安装的系统包。
 
+## 软件源更新失败时的行为（OpenWrt 24.x / opkg）
+
+部分第三方 feed 失效时，`opkg update` 可能返回非零状态，例如 `immortalwrtluci`、`passwall` 的 `Packages.gz` 下载失败，但官方 `base/packages` 仍然可用。安装器现在**最多刷新一次索引**，若刷新不完整，发出警告后继续尝试安装必需包；仅当依赖包本身安装失败时才停止。它不会擅自禁用、替换或删除用户的软件源。
+
+如依赖仍无法安装，可检查具体 feed，而不要直接删除或重建 opkg 数据库：
+
+```sh
+opkg update
+cat /etc/opkg/distfeeds.conf
+cat /etc/opkg/customfeeds.conf 2>/dev/null
+opkg list-installed | grep -E '^python3|^ip-full'
+```
+
+不同发行版第三方源未必能从通用 OpenWrt 镜像取得，需使用与**当前固件和架构**一致的软件源。安装完成后检查 `/etc/init.d/x-tunnel status`、`/etc/init.d/x-tunnel-speedtest-bot status` 和 `logread`。尚未在每个发行版实机完整验证。
+
 ## SSH 菜单
 
 ```sh
