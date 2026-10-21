@@ -270,8 +270,18 @@ if [ "$OPENWRT" -eq 1 ]; then
         /etc/init.d/cron start
     fi
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
-        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/xtunnel-menu
-        chmod 0755 /usr/bin/xtunnel-menu
+        if [ -e /usr/bin/x-t ] || [ -L /usr/bin/x-t ]; then
+            grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/x-t 2>/dev/null || {
+                echo "Cannot register x-t: /usr/bin/x-t is already used by another program." >&2
+                exit 1
+            }
+        fi
+        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/x-t
+        chmod 0755 /usr/bin/x-t
+        if [ -f /usr/bin/xtunnel-menu ] &&
+           grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/xtunnel-menu 2>/dev/null; then
+            rm -f /usr/bin/xtunnel-menu
+        fi
     fi
     printf 'Installed X-Tunnel procd services from %s\n' "$PROJECT_DIR"
     printf 'Status: /etc/init.d/x-tunnel status; logread -e x-tunnel\n'
