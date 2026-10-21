@@ -1,66 +1,274 @@
-# X-Tunnel OpenWrt / iStoreOS 轻量分支
+# X-Tunnel for OpenWrt / iStoreOS
 
-本分支专门针对 OpenWrt/iStoreOS（procd、BusyBox、apk/opkg）。**Debian/Ubuntu 使用 [main 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/main)**。
+> **OpenWrt 轻量分支：** [openwrt](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt)（BusyBox / procd，兼容 `opkg` 和 `apk`）。Debian、Ubuntu 等 systemd 系统请使用 [main 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/main)。两条分支的一键安装链接不要混用。
 
-## 优化原则
+X-Tunnel 在 OpenWrt 上运行独立的 SOCKS5 节点，并生成可供 sing-box / ShellCrash 使用的本地 Provider JSON。**默认只安装核心节点管理服务**；Telegram Bot、CF IP 测速及每日计划任务按需启用。
 
-- 默认只启动 X-Tunnel supervisor 与用户配置的各 x-tunnel 进程，生成 ShellCrash/sing-box 本地 Provider。
-- Telegram Bot、自动测速与相关 Python HTTPS/IDNA/路由依赖按需启用；避免默认增加常驻 Bot 进程。
-- supervisor 的 Telegram urllib 模块改为发生端口冲突通知时才加载；配置监视周期由 2 秒调整为 5 秒，降低空闲轮询频率（节点配置生效可能最多等待约 5 秒）。
-- 保留原有 cfip_speedtest.py 功能，但测速启动时仍会使用 CPU、RAM、网络吞吐和临时路由；**不是无 Python 的纯 Shell 实现**。
-- 仅支持 x86_64 / aarch64 下载现有 X-Tunnel Linux 内核；内核还需满足 musl/ABI 的实际运行要求。
+## 1. 一键安装（推荐）
 
-## 首次安装：交互式菜单（推荐）
-
-支持 OpenWrt 24.x / ImmortalWrt 等旧版 `opkg` 固件，也兼容使用 `apk` 的新版 OpenWrt。安装入口只需 BusyBox 的 `sh`、`tar` 和系统自带的 `wget` 或 `curl`，**打开菜单时不需要提前安装 Python**；选定功能后才由安装器检查和补齐相关依赖。
-
-在 root SSH 终端运行：
+在 OpenWrt / iStoreOS 的 **root SSH 终端**运行：
 
 ```sh
 wget -O /tmp/xtunnel-openwrt.sh https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/openwrt/quick-install.sh
 sh /tmp/xtunnel-openwrt.sh
 ```
 
-运行后会下载最新 `openwrt` 分支代码、保留已有节点与变量配置、创建缺少的示例模板，并直接进入管理菜单。**不会因为进入菜单就自动安装或重启服务。**
+如果固件没有 `wget`，但已有 `curl`，也可以先下载：
 
-首次部署顺序推荐：先选择 **5 编辑节点配置**，填入真实的服务地址/Token；再选择 **1 安装核心服务**。需要 Telegram Bot 时，选择 **3 设置 Bot**，并在 `project.env` 中填写可用代理，然后选择 **13 安装/启用 Bot**。不使用 Bot 的低内存设备只需安装核心服务。
+```sh
+curl -fL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/openwrt/quick-install.sh -o /tmp/xtunnel-openwrt.sh
+sh /tmp/xtunnel-openwrt.sh
+```
 
-菜单包括核心安装、GitHub 更新、Bot 设置、变量/节点编辑、服务启停、日志、定时测速及卸载。主菜单现增加 **`15` 一键重启 X-Tunnel** 和 **`16` 一键重启 Telegram Bot**：均需确认；重启核心会短暂中断所有节点连接，而单独重启 Bot 不影响 X-Tunnel 服务。配置编辑通过路由器自带的 `vi` 进行，编辑前自动备份。管理菜单显示当前 `opkg`/`apk` 和两个服务状态。
+**执行流程：** 检测 OpenWrt → 下载完整 `openwrt` 分支源码压缩包（不包含 Git 历史）→ 解压到默认目录 → 创建缺失的配置模板 → 注册 `x-t` 命令 → 打开交互式管理菜单。
 
-安装目录默认 `/overlay/x-tunnel-cf-ip-autotest`；如果没有 `/overlay`，会使用 `/root/x-tunnel-cf-ip-autotest`。已有 Git checkout 需要位于 `openwrt` 分支，安装器不会擅自将 `main` 切换为 `openwrt`。可通过 `X_TUNNEL_INSTALL_DIR` 指定其他绝对路径。
+**进入菜单本身不会安装 Python 依赖、启动或重启服务。** 只有选择安装、更新、重启或测速等具体操作才会执行相应任务。下载源码需要可用网络，以及 `sh`、`tar` 和 `wget` / `curl`；管理菜单依赖 BusyBox 常见工具（如 `vi`、`grep`）。
 
-安装后可在任何目录执行（旧的 `xtunnel-menu` 入口将在更新时清理）：
+当前自动下载 X-Tunnel Linux 内核支持 **x86_64/amd64 和 aarch64/arm64**。二进制还必须兼容当前固件的 libc / ABI；安装器会检查 ELF 架构并尝试运行 `-h`。低内存或低存储固件请优先安装核心服务。
+
+### 第一次安装：菜单操作顺序
+
+1. 选择 **5 编辑 X-Tunnel 节点**，填写真实节点地址、Token 和 CF IP。
+2. 选择 **1 安装/修复核心服务**。安装器按需补齐 Python 核心依赖，并启动 `x-tunnel` procd 服务。
+3. 需要 Telegram Bot 时，再选 **3 设置 Telegram Bot**，选 **4 编辑项目变量**设置实际可用的代理地址，最后选 **13 安装/启用 Telegram Bot**。
+4. 使用菜单 **8 查看日志**，或在 SSH 中查看服务状态。不要把“procd 运行中”直接等同于所有节点均已连通。
+
+不需要 Bot 的设备无需填写 `TG_TOKEN`、`TG_CHATID`，也无需安装 Bot/测速专用依赖。
+
+## 2. SSH 管理菜单与快捷入口
+
+安装入口下载完成后即可使用：
 
 ```sh
 x-t
 ```
 
-也可以从源码目录打开：
+`x-t` 实际调用项目目录中的 `menu.sh`，**不需要每次通过 GitHub 重新下载**。没有全局命令时也可运行：
 
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
 sh menu.sh
 ```
 
-### 非交互式安装（自动化部署）
+当前菜单选项：
 
-明确传入参数时不会打开菜单：
-
-```sh
-sh /tmp/xtunnel-openwrt.sh --core            # 仅核心服务
-sh /tmp/xtunnel-openwrt.sh --with-bot        # 核心 + Telegram Bot
-sh /tmp/xtunnel-openwrt.sh --with-speedtest  # 核心 + 测速依赖，不启动 Bot
-sh /tmp/xtunnel-openwrt.sh --enable-timer    # 核心 + 每日 18:00 定时测速
-sh /tmp/xtunnel-openwrt.sh --disable-bot     # 停用已有 Bot，保留核心
+```text
+ 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支
+ 3) 设置 Telegram Bot      4) 编辑项目变量配置
+ 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理
+ 7) Telegram Bot 服务管理  8) 查看日志
+ 9) 定时测速管理          10) 立即运行完整测速
+11) 配置检查              12) 卸载服务（保留配置）
+13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存
+15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot
+ 0) 退出
 ```
 
-非交互式执行时，首次生成示例节点配置后会退出，需补充实际参数再运行。启用 Bot 前还需要正确填写 `speedtest-bot.env` 的 `TG_TOKEN`、`TG_CHATID`。没有 SSH 交互终端时应使用上述显式参数。
+- **6 / 7**：启动、停止、重启及开机自启管理。
+- **15**：仅重启 X-Tunnel 核心与其节点，现有连接会短暂中断。
+- **16**：仅重启 Telegram Bot，不重启 X-Tunnel 节点。
+- **2 GitHub 更新**：下载最新代码并调用核心安装程序，**会重启核心服务**；不会自动替你重新配置或重启 Bot。
+- **14 关闭 Bot**：停止 Bot 并取消其开机自启，不重启 X-Tunnel 核心服务。
 
-## 软件源更新失败时的行为（OpenWrt 24.x / opkg）
+配置编辑使用 `vi`；修改前会备份到 `cfip-data/config-backups/`，涉及密钥的文件使用 `0600` 权限。节点配置由 supervisor 监测后自动重载（通常在数秒内）；Bot/项目代理变量变更后请使用相应的服务重启选项。
 
-部分第三方 feed 失效时，`opkg update` 可能返回非零状态，例如 `immortalwrtluci`、`passwall` 的 `Packages.gz` 下载失败，但官方 `base/packages` 仍然可用。安装器现在**最多刷新一次索引**，若刷新不完整，发出警告后继续尝试安装必需包；仅当依赖包本身安装失败时才停止。它不会擅自禁用、替换或删除用户的软件源。
+## 3. 默认目录与安装文件
 
-如依赖仍无法安装，可检查具体 feed，而不要直接删除或重建 opkg 数据库：
+默认项目路径为：
+
+```text
+/overlay/x-tunnel-cf-ip-autotest/
+├── quick-install.sh            # GitHub 一键安装/更新入口
+├── install.sh                  # 安装 procd 服务与按需依赖
+├── menu.sh                     # x-t 调用的菜单
+├── uninstall.sh                # 卸载服务
+├── x-tunnel.yaml               # 节点配置（私有，首次生成）
+├── speedtest-bot.env           # Bot 凭据（选配，首次使用时创建）
+├── project.env                 # 项目变量（首次生成）
+├── supervisor.py               # 多节点守护进程
+├── sync_singbox.py             # 本地 Provider 生成
+├── telegram_speedtest_bot.py   # Bot 程序
+├── cfip_speedtest.py           # CF IP 测速程序
+├── openwrt/                    # procd 服务模板及测速脚本
+├── runtime/                    # 生成的 Provider（运行后）
+└── cfip-data/                  # 测速记录、日志与配置备份
+```
+
+`runtime/`、`cfip-data/` 与 `speedtest-bot.env` 在首次下载时不一定存在，由相应安装或运行步骤生成。
+
+系统级路径：
+
+| 路径 | 作用 |
+| --- | --- |
+| `/usr/bin/x-t` | 菜单快捷命令 |
+| `/usr/bin/x-tunnel` | X-Tunnel 内核二进制 |
+| `/etc/init.d/x-tunnel` | 核心 procd 服务 |
+| `/etc/init.d/x-tunnel-speedtest-bot` | Bot procd 服务（选配） |
+| `/etc/crontabs/root` | 选配的每日测速任务 |
+
+若系统没有 `/overlay`，默认项目目录改为 `/root/x-tunnel-cf-ip-autotest`。可通过环境变量 `X_TUNNEL_INSTALL_DIR` 指定其他**绝对路径**，如：
+
+```sh
+X_TUNNEL_INSTALL_DIR=/mnt/storage/x-tunnel-cf-ip-autotest sh /tmp/xtunnel-openwrt.sh
+```
+
+一键安装下载的是**完整源码快照**，不是仅包含运行文件的精简包；按需安装指的是运行服务及其系统依赖。减少源码体积主要节省存储空间，不等于减少 X-Tunnel 内核的运行内存。
+
+## 4. 配置节点、Bot 与项目变量
+
+### 4.1 节点配置：`x-tunnel.yaml`
+
+从 `x-tunnel.example.yaml` 创建。节点行格式为：
+
+```text
+名称|服务地址|token|cfip|连接数|端口
+```
+
+示例结构（以下是占位符，不可直接用于连接）：
+
+```yaml
+defaults:
+  token: "替换为真实密钥"
+  cfip: "替换为可用的 Cloudflare IP"
+  connections: 3
+  ech: "cloudflare-ech.com"
+  dns: "https://doh.pub/dns-query"
+  listen_hosts:
+    - "127.0.0.1"
+  first_port: 32322
+max_nodes: 5
+nodes:
+  - "香港|wss://example.com/about:443||||"
+```
+
+未填写的可选字段采用 `defaults` 中的值。具体连接格式以实际内核及可用配置为准。每个节点通常对应独立的 X-Tunnel 内核进程；默认 `connections: 3`，在低内存环境可**备份后实验性降低至 1**，并比较连接稳定性与吞吐。节点行中显式填写的连接数优先于默认值。
+
+### 4.2 Telegram Bot：`speedtest-bot.env`
+
+通过菜单选项 **3** 修改：
+
+```sh
+TG_TOKEN='你的BotFather令牌'
+TG_CHATID='你的私聊数字ChatID'
+```
+
+必须填写有效的 Token 与数字 Chat ID，选项 **13** 才能启用 Bot。不要公开此文件、推送到仓库或粘贴到日志中。
+
+### 4.3 项目变量：`project.env`
+
+通过菜单选项 **4** 修改。常用变量：
+
+| 变量 | 用途 |
+| --- | --- |
+| `X_TUNNEL_LOCAL_PROXY` | Telegram 请求使用的本地或局域网 HTTP 代理；模板默认 `http://127.0.0.1:7890` |
+| `X_TUNNEL_TG_PROXY` | 可选 Telegram 专用代理，优先于本地代理 |
+| `X_TUNNEL_PROVIDER_PATH` | Provider 输出位置，默认 `runtime/x-tunnel-provider.json` |
+| `X_TUNNEL_LISTEN_HOSTS` | SOCKS5 监听 IP，默认仅本机 `127.0.0.1` |
+| `X_TUNNEL_TARGET_MBPS` | CF IP 测速目标速度，默认 300 Mbps |
+
+例如 ShellCrash HTTP 代理在其他 LAN 设备的 `192.168.68.21:7890`：
+
+```sh
+X_TUNNEL_LOCAL_PROXY=http://192.168.68.21:7890
+```
+
+上述地址仅为示例，必须改成你的**实际可连通**代理。如果要让局域网其他设备访问 SOCKS5，还需正确设置监听 IP 和系统防火墙；请勿无意开放到 WAN。
+
+## 5. 安装模式和资源占用
+
+| 模式 | 调用方式 | 行为 |
+| --- | --- | --- |
+| 核心（默认） | 菜单 **1** 或 `--core` | 安装 Python 核心依赖、X-Tunnel 内核、supervisor 与 Provider；不要求 Bot 凭据 |
+| 核心 + Bot | 菜单 **13** 或 `--with-bot` | 增加 Telegram Bot 和测速需要的 HTTPS/IDNA、`ip-full` 等依赖，并启动 Bot |
+| 测速依赖 | `--with-speedtest` | 安装测速依赖，不启用 Bot |
+| 定时测速 | 菜单 **9** 或 `--enable-timer` | 设置设备**本地时间 18:00** 的 cron 任务 |
+| 关闭 Bot | 菜单 **14** 或 `--disable-bot` | 停用已安装 Bot；菜单选项 14 不重启核心，安装器的 `--disable-bot` 会重新安装/启动核心 |
+
+无交互终端（自动化脚本/远程任务）时，使用明确参数：
+
+```sh
+sh /tmp/xtunnel-openwrt.sh --core
+sh /tmp/xtunnel-openwrt.sh --with-bot
+sh /tmp/xtunnel-openwrt.sh --with-speedtest
+sh /tmp/xtunnel-openwrt.sh --enable-timer
+```
+
+这些命令会更新源码并执行安装；**不是只修改当前运行模式而不重启核心**。如果第一次生成的是示例节点配置，安装入口会提示编辑并退出，配置完成后再次执行。仅查看菜单可以运行 `x-t`，不会触发更新。
+
+注意：低内存设备的主要 RAM 消耗可能来自**每个节点各自运行的 X-Tunnel 内核进程**。不启用 Bot 可减少一个常驻程序，但不意味着 5 个核心进程能压缩成一个。
+
+## 6. 更新、重装与迁移
+
+### 正常更新
+
+**只打开本地菜单：**
+
+```sh
+x-t
+```
+
+**更新 GitHub 源码并重新部署：** 在菜单选择 **2**，需确认；更新会重启核心服务。若要从系统原始一键入口更新菜单源码，也可重新运行第 1 节的下载命令。
+
+一键入口行为：
+
+- 目标目录不存在：下载并解压 `openwrt` 分支完整源码快照。
+- 目标目录包含 Git 仓库且已安装 Git：要求当前处于 `openwrt` 分支，随后执行 `git pull --ff-only`；如果是 `main` 分支则拒绝自动切换。
+- 目标目录没有 Git 仓库：复制更新源码文件；独立的私有配置和运行数据不会作为仓库源码下载，但更新前仍建议备份。
+
+### 从旧 `main` 部署迁移
+
+若原有目录是 Git 仓库且处于 `main`，**不要用新的一键入口直接覆盖**。先备份私有配置和需要保留的测速报告，确认无未提交修改，再手动切换：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+mkdir -p /overlay/x-tunnel-config-backup
+cp -p x-tunnel.yaml project.env /overlay/x-tunnel-config-backup/
+[ ! -f speedtest-bot.env ] || cp -p speedtest-bot.env /overlay/x-tunnel-config-backup/
+git status --short
+git fetch origin openwrt
+git switch openwrt
+```
+
+如有本地 Git 修改，先处理冲突，不要强制切换。切换后运行 `sh menu.sh`，按需安装。重新部署前如需停止原服务，先在维护窗口进行，以避免中断正在使用的 SOCKS5 节点。
+
+### 卸载
+
+在菜单选择 **12**，或运行：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh uninstall.sh
+```
+
+这会停止、禁用并移除本项目 procd 服务及其计划任务，同时清理匹配的 `x-t` 菜单快捷方式；**保留项目目录、私有配置、测速记录和共享的 `/usr/bin/x-tunnel` 内核**，不改动 ShellCrash。
+
+如确实要删除整个项目和私有配置（不可恢复），可在备份后执行 `sh uninstall.sh --purge`，并在交互提示中输入 `DELETE`。这不会删除共享内核或自动卸载系统软件包。
+
+## 7. 验证安装与问题排查
+
+### 核心与 Bot 是否启动
+
+```sh
+/etc/init.d/x-tunnel status
+/etc/init.d/x-tunnel-speedtest-bot status
+logread | tail -n 80
+```
+
+只安装核心时，Bot 服务不存在属于正常情况。procd 显示 `running` 说明服务进程存在，还需结合 SOCKS5 端口及连通性检测。OpenWrt 的 `logread` 将某些子进程输出归入 `daemon.err`，但含 `INFO`、ECH 查询或通道就绪的行不必然是故障。
+
+### Provider 文件在哪里
+
+默认在：
+
+```text
+/overlay/x-tunnel-cf-ip-autotest/runtime/x-tunnel-provider.json
+```
+
+需要用户自行在 ShellCrash / sing-box 中添加本地 Provider 引用。本项目不会自动修改 ShellCrash 配置、重启 ShellCrash 或更改其防火墙。
+
+### `opkg update` 部分软件源失败
+
+旧版 OpenWrt 的第三方 feed 可能返回 HTTP 错误。安装器最多尝试刷新一次包索引；若部分 feed 失败，会先警告并继续尝试从可用索引安装缺失软件包，**只有实际依赖安装失败才中止**。不会自动改写或禁用系统软件源。
 
 ```sh
 opkg update
@@ -69,55 +277,34 @@ cat /etc/opkg/customfeeds.conf 2>/dev/null
 opkg list-installed | grep -E '^python3|^ip-full'
 ```
 
-不同发行版第三方源未必能从通用 OpenWrt 镜像取得，需使用与**当前固件和架构**一致的软件源。安装完成后检查 `/etc/init.d/x-tunnel status`、`/etc/init.d/x-tunnel-speedtest-bot status` 和 `logread`。尚未在每个发行版实机完整验证。
+新 `apk` 固件也需要使用与自身发行版和架构匹配的软件包源。安装器不会自动替换源地址。
 
-## 从旧 main 部署迁移（尤其重要）
+### Bot 报 `unknown encoding: idna`
 
-不要直接在运行中的同一目录盲目切换分支。建议先备份 `x-tunnel.yaml`、`speedtest-bot.env`、`project.env` 和需要保留的测速记录，确认当前 Git 工作区无未提交修改。若已克隆仓库：
+OpenWrt 的精简 Python 可能缺少标准库 IDNA 编码器；Bot 使用 HTTPS 代理时可能触发此报错。检查：
 
 ```sh
-cd /overlay/x-tunnel-cf-ip-autotest
-/etc/init.d/x-tunnel-speedtest-bot stop 2>/dev/null || true
-/etc/init.d/x-tunnel stop 2>/dev/null || true
-git fetch origin openwrt
-git switch openwrt
-sh install.sh --disable-bot
+python3 -c 'import codecs; codecs.lookup("idna"); print("IDNA OK")'
 ```
 
-上述命令默认部署轻量核心，并停止旧 Bot。**旧版已设置的 cron 自动测速不会被这一安装命令自动删除**，如要彻底停用须检查并清理本项目的 cron 项（管理菜单中可关闭）。手动切换到 `openwrt` 后，菜单中的更新才会从正确分支拉取。
+旧版 `opkg` 固件可根据实际 feed 安装 `python3-codecs`；使用菜单选项 **13** 时安装器也会检查相应依赖。
 
-## 运行与日志
+### 低内存与 GeoIP 下载竞争
 
-```sh
-/etc/init.d/x-tunnel status
-/etc/init.d/x-tunnel-speedtest-bot status
-logread | tail -n 80
-cat /overlay/x-tunnel-cf-ip-autotest/runtime/x-tunnel-provider.json
-```
-
-核心安装并不会自动创建 Bot 服务。默认 Provider 位于 `runtime/x-tunnel-provider.json`；ShellCrash 需要自行引用，不会被本项目自动修改或重启。
-
-## 低内存设备排查
-
-如果启动 5 个节点后内存明显增加，先检查 **每个 x-tunnel 子进程** 的常驻内存（RSS）。独立进程存在共享内存重复统计的可能，因此 RSS 总和不等于实际额外物理占用；以 `free` 的前后差值辅助判断。
+启动多个节点后可检查每个内核进程的常驻内存：
 
 ```sh
-free
+awk '/^(MemTotal|MemAvailable):/ {printf "%-17s %.1f MiB\n", $1, $2/1024}' /proc/meminfo
 for pid in $(pidof x-tunnel 2>/dev/null); do
-  echo "PID: $pid"
-  grep -E '^(Name|VmRSS|VmSize|Threads):' "/proc/$pid/status"
+  echo "PID=$pid"
+  grep -E '^(VmRSS|VmSize|Threads):' "/proc/$pid/status"
 done
 ```
 
-`x-tunnel.yaml` 中 `defaults.connections` 通常为 3，5 个节点意味着每个节点各自创建相应连接；可以先备份后把该值临时调至 1，观察内存、SMUX 稳定性及实际吞吐是否变化。节点行中显式设置的连接数会覆盖默认值。**减小连接数不保证减少相同比例的内存**；独立 Go 进程、Geo 数据加载及内部缓冲区可能仍占主要部分。
+`VmSize` 是虚拟地址空间，不是实际物理内存。多进程 RSS 会包含共享页，不能简单相加作为精确的总占用。某些 OpenWrt 内核不提供 `/proc/PID/smaps_rollup`，属于统计接口限制。
 
-同时启动多个内核时，如果同时检测到 `geoip.dat` 缺失，可能竞争下载同名临时文件，出现 `rename geoip.dat.tmp geoip.dat: no such file or directory`。日志后续显示 GeoIP/GeoSite 已成功加载时通常不影响当前代理服务。不要在服务运行时盲目删除或反复清理 Geo 文件；这一共享文件竞争仍待内核侧修复。
+如果启动时多个进程同时下载 `geoip.dat` / `geosite.dat`，偶尔可能发生同名临时文件的重命名竞争。若后续日志显示 Geo 文件成功加载、节点就绪，通常不影响当前运行；共享下载竞争仍需内核侧进一步修复。
 
-## 卸载
+---
 
-```sh
-cd /overlay/x-tunnel-cf-ip-autotest
-sh uninstall.sh
-```
-
-卸载服务与本项目计划任务，但保留项目目录、私有配置和共享 `/usr/bin/x-tunnel` 内核。**优化内容仍需 OpenWrt 实机验证，尤其是 Python 发行包拆分和内核 ABI 兼容性。**
+本分支重点是 **轻量安装与按需运行**，而非取消 Python 或保证固定内存占用。不同 OpenWrt 固件的 Python 拆包、软件源及 X-Tunnel 二进制 ABI 存在差异，仍应以实机服务状态和日志为准。
