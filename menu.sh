@@ -96,7 +96,7 @@ install_services() {
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
   prepare speedtest-bot.env speedtest-bot.env.example || return
   prepare project.env project.env.example || return
-  say '安装器需要已填写的节点配置、TG_TOKEN 和 TG_CHATID。'
+  say 'OpenWrt 默认仅安装核心服务；Bot 可选安装。'
   if ask '执行安装或修复服务？'; then
     sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
   fi
@@ -169,12 +169,13 @@ show_menu() {
   printf '平台: %s  项目路径: %s\n' "$PLATFORM" "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
-  say ' 1) 安装/修复服务           2) GitHub 更新项目'
+  say ' 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支'
   say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
   say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
   say ' 7) Telegram Bot 服务管理  8) 查看日志'
   say ' 9) 定时测速管理          10) 立即运行完整测速'
   say '11) 配置检查              12) 卸载服务（保留配置）'
+  say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
   say ' 0) 退出'
 }
 while :; do
@@ -198,6 +199,12 @@ while :; do
           if check_config "$file"; then say "$file: OK"; else say "$file: INVALID"; fi
         else say "$file: 未配置"; fi
       done;;
+    13)
+      root_only || continue
+      if ask '安装 Telegram Bot 及测速依赖？'; then sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'; fi;;
+    14)
+      root_only || continue
+      sh "$PROJECT_DIR/install.sh" --disable-bot || say '关闭 Bot 失败。';;
     12)
       root_only || continue
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
