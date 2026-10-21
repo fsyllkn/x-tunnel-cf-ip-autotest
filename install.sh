@@ -3,25 +3,29 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ENABLE_TIMER=0
+WITH_BOT=0
+WITH_SPEEDTEST=0
+DISABLE_BOT=0
 OPENWRT=0
-PLATFORM=systemd
+PLATFORM=openwrt
 KERNEL_PATH=/usr/bin/x-tunnel
 KERNEL_REPOSITORY=caichengle666/x-tunnel
 
-if [ -f /etc/openwrt_release ] || {
-    [ -f /etc/rc.common ] && [ -x /sbin/procd ]
-}; then
+if [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ] && [ -x /sbin/procd ]; then
     OPENWRT=1
-    PLATFORM=openwrt
-elif [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
-    echo "Unsupported init system: expected OpenWrt procd or systemd." >&2
+else
+    echo "OpenWrt/procd required. Debian and Ubuntu should use the main branch." >&2
     exit 1
 fi
 
 for argument in "$@"; do
     case "$argument" in
-        --enable-timer) ENABLE_TIMER=1 ;;
-        *) echo "Usage: $0 [--enable-timer]" >&2; exit 2 ;;
+        --enable-timer) ENABLE_TIMER=1; WITH_SPEEDTEST=1 ;;
+        --with-bot) WITH_BOT=1; WITH_SPEEDTEST=1 ;;
+        --with-speedtest) WITH_SPEEDTEST=1 ;;
+        --disable-bot) DISABLE_BOT=1 ;;
+        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer] [--disable-bot]"; exit 0 ;;
+        *) echo "Invalid option. Use --help." >&2; exit 2 ;;
     esac
 done
 
@@ -30,7 +34,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-printf 'Detected platform: %s\n' "$PLATFORM"
+[ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
+printf 'Detected platform: %s (core-only by default)\n' "$PLATFORM"
 
 required_commands="ip sed cp chmod mkdir mv python3 uname"
 if [ "$OPENWRT" -eq 0 ]; then
