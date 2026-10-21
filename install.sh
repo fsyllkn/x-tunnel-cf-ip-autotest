@@ -141,6 +141,17 @@ fi
 chmod 0600 "$PROJECT_DIR/speedtest-bot.env" "$PROJECT_DIR/x-tunnel.yaml"
 chmod 0644 "$PROJECT_DIR/project.env"
 
+# OpenWrt's python3-light may omit standard library IDNA codecs.
+# urllib's HTTPS proxy tunnel setup requires this codec.
+python3 -c 'import codecs; codecs.lookup("idna")' >/dev/null 2>&1 || {
+    if [ "$OPENWRT" -eq 1 ]; then
+        echo "Python IDNA codec is missing. Install python3-codecs using apk add or opkg install." >&2
+    else
+        echo "Python IDNA codec is missing. Install the complete Python 3 standard library." >&2
+    fi
+    exit 1
+}
+
 python3 -c 'import yaml' >/dev/null 2>&1 || {
     if [ "$OPENWRT" -eq 1 ]; then
         echo "Python dependency PyYAML is missing (install python3-yaml with opkg/apk)." >&2
