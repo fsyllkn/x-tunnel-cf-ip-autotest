@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import hashlib
 import ipaddress
 import json
 import os
@@ -34,6 +35,8 @@ WATCHED_FILES = (
     PROJECT_ENV_FILE,
 )
 DEFAULT_MAX_NODES = 5
+DEFAULT_PROCESS_UID = 29002
+NODE_RUNTIME = BASE_DIR / "runtime" / "engines"
 RESTART_DELAY = 5
 POLL_INTERVAL = 5
 STALE_X_TUNNEL_WAIT = 5.0
@@ -261,6 +264,7 @@ def allocate_port(
 
 def read_specs(reusable_bindings=None, check_port_availability=True, on_port_conflict=None):
     load_project_env()
+    process_uid = configured_process_uid()
     reusable_bindings = set(reusable_bindings or ())
     with open(CONFIG, "r", encoding="utf-8") as config_file:
         document = yaml.safe_load(config_file) or {}
@@ -339,6 +343,7 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
 
         specs.append({
             "name": name,
+            "process_uid": process_uid,
             "server": server,
             "token": str(token),
             "cfip": str(cfip),
@@ -349,6 +354,35 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
             "port": port,
         })
     return specs
+
+
+def configured_process_uid():
+    raw = os.environ.get("X_TUNNEL_PROCESS_UID", str(DEFAULT_PROCESS_UID)).strip()
+    if not raw.isdecimal():
+        raise ValueError("X_TUNNEL_PROCESS_UID must be a numeric UID")
+    uid = int(raw)
+    if not 1000 <= uid <= 60000:
+        raise ValueError("X_TUNNEL_PROCESS_UID must be in 1000..60000, not root")
+    return uid
+
+
+def child_workdir(spec):
+    # The Go kernel may write GeoIP/GeoSite cache files relative to cwd.
+    # Separate directories also avoid concurrent *.tmp cache collisions.
+    uid = spec["process_uid"]
+    if os.geteuid() != 0:
+        raise PermissionError(
+            "X-Tunnel supervisor must be root to launch dedicated kernel UIDs"
+        )
+    NODE_RUNTIME.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fingerprint = hashlib.sha256(spec["name"].encode("utf-8")).hexdigest()[:16]
+    path = NODE_RUNTIME / ("%s-%d" % (fingerprint, spec["port"]))
+    if path.is_symlink():
+        raise RuntimeError("X-Tunnel node work directory must not be a symlink")
+    path.mkdir(mode=0o700, exist_ok=True)
+    os.chown(path, uid, uid)
+    os.chmod(path, 0o700)
+    return path
 
 
 def command_for(spec):
@@ -383,13 +417,22 @@ def stop_child(entry):
 def start_child(entry):
     spec = entry["spec"]
     try:
-        entry["process"] = subprocess.Popen(command_for(spec))
+        uid = spec["process_uid"]
+        workdir = child_workdir(spec)
+        entry["process"] = subprocess.Popen(
+            command_for(spec),
+            cwd=str(workdir),
+            user=uid,
+            group=uid,
+            extra_groups=(),
+            umask=0o077,
+        )
         entry["restart_at"] = None
         logging.info(
-            "started node %s on SOCKS5 port %d (pid %d)",
-            spec["name"], spec["port"], entry["process"].pid,
+            "started node %s on SOCKS5 port %d (pid %d, uid %d)",
+            spec["name"], spec["port"], entry["process"].pid, uid,
         )
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         logging.exception("failed to start node %s", spec["name"])
         entry["process"] = None
         entry["restart_at"] = time.monotonic() + RESTART_DELAY
