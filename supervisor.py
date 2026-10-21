@@ -11,8 +11,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import yaml
@@ -37,7 +35,7 @@ WATCHED_FILES = (
 )
 DEFAULT_MAX_NODES = 5
 RESTART_DELAY = 5
-POLL_INTERVAL = 2
+POLL_INTERVAL = 5
 STALE_X_TUNNEL_WAIT = 5.0
 UNKNOWN_SOCKET_WAIT = 1.0
 PORT_RELEASE_POLL = 0.25
@@ -154,6 +152,8 @@ def read_bot_credentials():
 
 
 def send_port_conflict_notification(event):
+    import urllib.error
+    import urllib.request
     token, chat_id = read_bot_credentials()
     if not token or not chat_id:
         logging.warning("cannot send port-conflict Telegram alert: bot credentials or chat ID missing")
