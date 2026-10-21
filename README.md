@@ -24,6 +24,23 @@
 
 `X-Tunnel-ShellCrash-Loop-Fix.md` 是旧版自动联动方案的历史文档；当前项目不再自动改写 ShellCrash 路由、防火墙或重启服务。
 
+## SSH 交互式管理菜单（OpenWrt / Linux）
+
+参考 ShellCrash 的终端菜单，新增 `menu.sh`：支持安装/修复、GitHub 更新、Telegram Bot 凭据配置、`project.env` 变量编辑、`x-tunnel.yaml` 节点编辑、X-Tunnel 和 Bot 服务启停及开机自启、日志、定时测速、立即测速、配置检查和保留配置卸载。OpenWrt 使用 procd，Linux 使用 systemd；不会改动 ShellCrash。
+
+安装或修复服务时，安装器会注册全局命令 `xtunnel-menu`。更新后先运行一次 `sh install.sh` 注册命令，也可立即用以下方式打开：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+git pull --ff-only
+sh menu.sh
+# 完成安装/修复后，可以在任意目录运行 xtunnel-menu
+```
+
+菜单中的配置编辑使用设备自带的 `vi`，编辑前自动备份到权限为 `0700` 的 `cfip-data/config-backups/`，私有配置保持 `0600`。节点配置校验通过后会由 supervisor 自动重载；项目变量和 Bot 设置修改后，可在服务菜单重启相应服务。更新操作使用已有的 `quick-install.sh`，可能重启 X-Tunnel/Bot，执行前请确认；卸载仅删除本项目服务、定时任务和相应的菜单启动器，不删除共享内核及私有配置。
+
+**首次安装必须填写节点和 Telegram Bot 的有效配置**，菜单不会绕过现有安装器的凭据验证。菜单状态反映 procd/systemd 的运行结果，不代表所有上游节点均已通过连接测试。
+
 ## 一键安装与卸载（OpenWrt / Linux）
 
 支持新版 OpenWrt `apk`、旧版 `opkg` 和 Debian/Ubuntu `apt-get`。自动补齐常用 Python 依赖，下载仓库并保留已有私有配置。首次使用时会创建节点与 Telegram 配置模板，**必须编辑并再次执行安装命令**，才会注册服务。
