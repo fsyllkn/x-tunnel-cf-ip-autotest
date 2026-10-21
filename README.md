@@ -25,7 +25,7 @@ sh /tmp/xtunnel-openwrt.sh
 
 首次部署顺序推荐：先选择 **5 编辑节点配置**，填入真实的服务地址/Token；再选择 **1 安装核心服务**。需要 Telegram Bot 时，选择 **3 设置 Bot**，并在 `project.env` 中填写可用代理，然后选择 **13 安装/启用 Bot**。不使用 Bot 的低内存设备只需安装核心服务。
 
-菜单包括核心安装、GitHub 更新、Bot 设置、变量/节点编辑、服务启停、日志、定时测速及卸载。配置编辑通过路由器自带的 `vi` 进行，编辑前自动备份。管理菜单显示当前 `opkg`/`apk` 和两个服务状态。
+菜单包括核心安装、GitHub 更新、Bot 设置、变量/节点编辑、服务启停、日志、定时测速及卸载。主菜单现增加 **`15` 一键重启 X-Tunnel** 和 **`16` 一键重启 Telegram Bot**：均需确认；重启核心会短暂中断所有节点连接，而单独重启 Bot 不影响 X-Tunnel 服务。配置编辑通过路由器自带的 `vi` 进行，编辑前自动备份。管理菜单显示当前 `opkg`/`apk` 和两个服务状态。
 
 安装目录默认 `/overlay/x-tunnel-cf-ip-autotest`；如果没有 `/overlay`，会使用 `/root/x-tunnel-cf-ip-autotest`。已有 Git checkout 需要位于 `openwrt` 分支，安装器不会擅自将 `main` 切换为 `openwrt`。可通过 `X_TUNNEL_INSTALL_DIR` 指定其他绝对路径。
 
