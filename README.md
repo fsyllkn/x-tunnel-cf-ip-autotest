@@ -341,6 +341,28 @@ python3 -c 'from cfip_speedtest import DirectCandidateRoutes; print(DirectCandid
 
 如显示 `('native-direct', None)`，表示**本机 Linux 路由规则**符合原生路由测速条件；不代表上级路由器一定直连公网。保持原有防泄漏原则，勿为通过测试而盲目修改防火墙和路由表。
 
+### 核心安装报 `No module named 'urllib'`（Python 3.11 / core-only）
+
+OpenWrt 的 `python3-light` 不是完整标准库。Python 3.11 `pathlib` 导入 `urllib.parse`；`supervisor.py` 在读取 `x-tunnel.yaml` **之前**便导入 `pathlib`，所以缺少 `python3-urllib` 时出现 `ModuleNotFoundError: No module named 'urllib'`，不表示节点配置错误。
+
+旧版安装器仅在测速或 Bot 模式安装 `python3-urllib`，导致 `core-only` 缺少依赖。新版 `openwrt/install.sh` 已修复：核心模式也会检查/安装 `python3-urllib`，以及独立 UID 节点目录需要的 `python3-hashlib`；同时将“导入依赖失败”和“节点 YAML 配置错误”分开提示。**不改变已存在的 X-Tunnel Go 二进制、节点设置或测速功能。**
+
+已安装的 OpenWrt 可以直接在 SSH 中补齐依赖，无需立即重新部署整个项目：
+
+```sh
+opkg update
+opkg install python3-urllib
+python3 -c 'import urllib.parse; from pathlib import Path; print("urllib/pathlib OK")'
+python3 -c 'import hashlib; print(hashlib.sha256(b"test").hexdigest())'
+
+cd /overlay/x-tunnel-cf-ip-autotest
+python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False); print("core supervisor preflight OK")'
+```
+
+如 `hashlib` 检查也失败，再按需执行 `opkg install python3-hashlib`。若设备使用 `apk`，分别改为 `apk update`、`apk add python3-urllib` 和必要时的 `apk add python3-hashlib`。不要通过安装 `python3-decimal` 修复 `urllib` 缺失，也不要仅因这条 traceback 修改 `x-tunnel.yaml`。
+
+以上检查全部只读，不会重启五个节点。需要重新安装 procd 服务时，再使用 `x-t` 菜单 1；**该安装动作会重启 X-Tunnel 核心，请在允许 SOCKS5 连接短暂中断时执行。**
+
 ### Bot 报 `unknown encoding: idna`
 
 OpenWrt 的精简 Python 可能缺少标准库 IDNA 编码器；Bot 使用 HTTPS 代理时可能触发此报错。检查：
