@@ -270,7 +270,11 @@ if [ "$OPENWRT" -eq 1 ]; then
         /etc/init.d/cron start
     fi
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
-        if [ -e /usr/bin/x-t ] || [ -L /usr/bin/x-t ]; then
+        if [ -L /usr/bin/x-t ]; then
+    echo '/usr/bin/x-t is a symlink; refusing to overwrite it.' >&2
+    exit 1
+  fi
+  if [ -e /usr/bin/x-t ]; then
             grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/x-t 2>/dev/null || {
                 echo "Cannot register x-t: /usr/bin/x-t is already used by another program." >&2
                 exit 1
