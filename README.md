@@ -29,10 +29,10 @@ sh /tmp/xtunnel-openwrt.sh
 
 安装目录默认 `/overlay/x-tunnel-cf-ip-autotest`；如果没有 `/overlay`，会使用 `/root/x-tunnel-cf-ip-autotest`。已有 Git checkout 需要位于 `openwrt` 分支，安装器不会擅自将 `main` 切换为 `openwrt`。可通过 `X_TUNNEL_INSTALL_DIR` 指定其他绝对路径。
 
-安装后可在任何目录执行：
+安装后可在任何目录执行（旧的 `xtunnel-menu` 入口将在更新时清理）：
 
 ```sh
-xtunnel-menu
+x-t
 ```
 
 也可以从源码目录打开：
@@ -96,6 +96,22 @@ cat /overlay/x-tunnel-cf-ip-autotest/runtime/x-tunnel-provider.json
 ```
 
 核心安装并不会自动创建 Bot 服务。默认 Provider 位于 `runtime/x-tunnel-provider.json`；ShellCrash 需要自行引用，不会被本项目自动修改或重启。
+
+## 低内存设备排查
+
+如果启动 5 个节点后内存明显增加，先检查 **每个 x-tunnel 子进程** 的常驻内存（RSS）。独立进程存在共享内存重复统计的可能，因此 RSS 总和不等于实际额外物理占用；以 `free` 的前后差值辅助判断。
+
+```sh
+free
+for pid in $(pidof x-tunnel 2>/dev/null); do
+  echo "PID: $pid"
+  grep -E '^(Name|VmRSS|VmSize|Threads):' "/proc/$pid/status"
+done
+```
+
+`x-tunnel.yaml` 中 `defaults.connections` 通常为 3，5 个节点意味着每个节点各自创建相应连接；可以先备份后把该值临时调至 1，观察内存、SMUX 稳定性及实际吞吐是否变化。节点行中显式设置的连接数会覆盖默认值。**减小连接数不保证减少相同比例的内存**；独立 Go 进程、Geo 数据加载及内部缓冲区可能仍占主要部分。
+
+同时启动多个内核时，如果同时检测到 `geoip.dat` 缺失，可能竞争下载同名临时文件，出现 `rename geoip.dat.tmp geoip.dat: no such file or directory`。日志后续显示 GeoIP/GeoSite 已成功加载时通常不影响当前代理服务。不要在服务运行时盲目删除或反复清理 Geo 文件；这一共享文件竞争仍待内核侧修复。
 
 ## 卸载
 
