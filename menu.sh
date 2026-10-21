@@ -185,10 +185,17 @@ show_logs() {
         say '测速 Python 导入检查失败。请查看上方 traceback。'
       fi
       if command -v ip >/dev/null 2>&1; then
-        if ip -4 rule show 2>/dev/null | grep -Eq 'fwmark .*lookup 100([[:space:]]|$)'; then
-          say '检测到 IPv4 ShellCrash 策略路由表 100 的 fwmark 规则。'
-        else
-          say '提示：未找到 ShellCrash 的 IPv4 fwmark lookup 100，完整测速的强制直连路由可能无法启动。'
+        say '检测测速器的实际 IPv4 出站模式（只读）：'
+        if ! (cd "$PROJECT_DIR" && python3 -c '
+from cfip_speedtest import DirectCandidateRoutes
+mode, mark = DirectCandidateRoutes.routing_mode("-4", "100")
+if mode == "native-direct":
+    DirectCandidateRoutes.verify_native_route("1.1.1.1", "-4")
+    print("OK: 普通默认路由；无需安装 ShellCrash，也不会添加测速策略路由")
+else:
+    print("OK: 已检测到 fwmark 策略路由（mark=%s）" % mark)
+'); then
+          say 'ERROR: 无法确认安全的直连路由，请检查上方错误。'
         fi
       else
         say '提示：缺少 ip 命令，测速需要 ip-full。'
