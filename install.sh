@@ -77,6 +77,27 @@ install_missing() {
     fi
 }
 command -v python3 >/dev/null 2>&1 || install_missing python3-light
+# OpenWrt splits Python's standard library into separate packages. Python 3.11
+# pathlib imports urllib.parse even for local-file operations; the core
+# supervisor therefore requires urllib in ALL installation modes.
+if ! python3 -c 'import urllib.parse; from pathlib import Path' >/dev/null 2>&1; then
+    echo "[INFO] Core Python urllib.parse/pathlib missing; installing python3-urllib."
+    install_missing python3-urllib || exit 1
+fi
+python3 -c 'import urllib.parse; from pathlib import Path' >/dev/null 2>&1 || {
+    echo "[ERROR] Core Python still cannot import urllib.parse/pathlib." >&2
+    echo "[ERROR] Check OpenWrt package feeds and Python package version compatibility." >&2
+    exit 1
+}
+# Dedicated-UID X-Tunnel nodes use hashlib for per-node cache directories.
+if ! python3 -c 'import hashlib; hashlib.sha256(b"x-tunnel").hexdigest()' >/dev/null 2>&1; then
+    echo "[INFO] Core Python hashlib missing; installing python3-hashlib."
+    install_missing python3-hashlib || exit 1
+fi
+python3 -c 'import hashlib; hashlib.sha256(b"x-tunnel").hexdigest()' >/dev/null 2>&1 || {
+    echo "[ERROR] Core Python hashlib is unavailable after package installation." >&2
+    exit 1
+}
 python3 -c 'import yaml' >/dev/null 2>&1 || install_missing python3-yaml
 python3 -c 'import logging' >/dev/null 2>&1 || install_missing python3-logging
 if [ "$WITH_SPEEDTEST" -eq 1 ]; then
@@ -210,10 +231,18 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     fi
     exit 1
 }
-PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' || {
-    echo "Invalid x-tunnel.yaml configuration." >&2
+# Separate Python import failures from invalid node configuration.
+# Neither preflight changes running nodes, routes, or Provider files.
+if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor'); then
+    echo "[ERROR] X-Tunnel supervisor import failed (missing Python dependency)." >&2
+    echo "[ERROR] Existing X-Tunnel service was not restarted." >&2
     exit 1
-}
+fi
+if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)'); then
+    echo "[ERROR] X-Tunnel configuration preflight failed; inspect x-tunnel.yaml and project.env." >&2
+    echo "[ERROR] Existing X-Tunnel service was not restarted." >&2
+    exit 1
+fi
 # Fail during installation, not after a Telegram command launches a subprocess.
 # Import-only preflight never changes routes, nodes or their CF IP configuration.
 if [ "$WITH_SPEEDTEST" -eq 1 ]; then
