@@ -303,7 +303,22 @@ tail -n 80 /overlay/x-tunnel-cf-ip-autotest/cfip-data/openwrt-speedtest.log
 logread | grep -E 'Bot received|Speed-test bot|Telegram polling' | tail -n 30
 ```
 
-测速还要求 root 权限及 ShellCrash 的策略路由规则（IPv4 `fwmark ... lookup 100`，IPv6 为表 `101`），用于临时强制候选 IP 直连；如果没有相关规则，会拒绝继续测试，而不是悄悄走代理。先通过自检，再按实际日志检查路由问题，**不要删除或任意覆盖系统路由**。
+### 不安装 ShellCrash 的 OpenWrt 也可以测速
+
+测速器已经支持 **native-direct**：当 `ip -4 rule show` 只有默认的 `local/main/default` 规则、`ip route get <候选IP>` 指向普通网口且没有异常策略路由时，测速直接沿现有默认路由发送请求，**不新增策略路由，不要求 ShellCrash 的表 100/101**。
+
+例如无 ShellCrash 的旁路由（`br-lan` → `192.168.68.1`）可直接测速；但路由检查**无法排除上游网关代理或隐藏的 nftables/iptables 重定向**。如果设备存在其他未知策略路由，程序将拒绝自动处理。遇到带已知 `fwmark` 的 ShellCrash 模式则沿用原有的临时策略路由逻辑。
+
+在运行完整测速之前，可通过 `x-t` → **8 查看日志** → **4 测速环境自检** 进行只读检查；或者执行：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+ip -4 rule show
+ip -4 route get 1.1.1.1
+python3 -c 'from cfip_speedtest import DirectCandidateRoutes; print(DirectCandidateRoutes.routing_mode("-4", "100"))'
+```
+
+如显示 `('native-direct', None)`，表示**本机 Linux 路由规则**符合原生路由测速条件；不代表上级路由器一定直连公网。保持原有防泄漏原则，勿为通过测试而盲目修改防火墙和路由表。
 
 ### Bot 报 `unknown encoding: idna`
 
