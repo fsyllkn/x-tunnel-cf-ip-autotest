@@ -45,6 +45,12 @@ else
     systemctl daemon-reload
 fi
 
+for launcher in /usr/bin/xtunnel-menu /usr/local/bin/xtunnel-menu; do
+    if [ -f "$launcher" ] && grep -Fq "$PROJECT_DIR/menu.sh" "$launcher"; then
+        rm -f "$launcher"
+    fi
+done
+
 printf 'X-Tunnel services and managed schedule removed.\n'
 printf 'Project and private configs retained at: %s\n' "$PROJECT_DIR"
 printf 'Shared /usr/bin/x-tunnel binary and ShellCrash settings are not removed.\n'
