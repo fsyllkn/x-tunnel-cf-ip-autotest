@@ -214,6 +214,16 @@ PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(c
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
+# Fail during installation, not after a Telegram command launches a subprocess.
+# Import-only preflight never changes routes, nodes or their CF IP configuration.
+if [ "$WITH_SPEEDTEST" -eq 1 ]; then
+    echo "Checking CF speedtest Python imports (without starting a test)..."
+    if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c 'import cfip_speedtest'); then
+        echo "[ERROR] CF speedtest imports failed. Review the Python traceback above." >&2
+        echo "[ERROR] No CF routes or speedtest processes were started." >&2
+        exit 1
+    fi
+fi
 if [ "$WITH_BOT" -eq 1 ]; then
 python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
 import pathlib
