@@ -1,14 +1,32 @@
 #!/bin/sh
-# X-Tunnel single-command bootstrap for OpenWrt/procd and systemd Linux.
+# Interactive X-Tunnel bootstrap for OpenWrt/procd (apk or opkg).
 set -eu
 
 REPO_ARCHIVE='https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/archive/refs/heads/openwrt.tar.gz'
 REPO_NAME=x-tunnel-cf-ip-autotest
 BRANCH=openwrt
+# No arguments opens an interactive SSH installation and management menu.
+# Explicit flags keep noninteractive installation available for automation.
 INSTALL_ARGS=""
+MENU_MODE=1
 for arg in "$@"; do
- case "$arg" in --with-bot|--with-speedtest|--enable-timer|--disable-bot) INSTALL_ARGS="$INSTALL_ARGS $arg";; *) echo "Unknown option: $arg" >&2; exit 2;; esac
+ case "$arg" in
+   --menu) MENU_MODE=1 ;;
+   --core) MENU_MODE=0 ;;
+   --with-bot|--with-speedtest|--enable-timer|--disable-bot)
+     MENU_MODE=0
+     INSTALL_ARGS="$INSTALL_ARGS $arg" ;;
+   -h|--help)
+     echo "Usage: sh quick-install.sh [--menu|--core|--with-bot|--with-speedtest|--enable-timer|--disable-bot]"
+     echo "No arguments: interactive installation/management menu (SSH terminal required)."
+     exit 0 ;;
+   *) echo "Unknown option: $arg" >&2; exit 2 ;;
+ esac
 done
+if [ "$MENU_MODE" -eq 1 ] && [ ! -t 0 ]; then
+ echo "[ERROR] Interactive mode requires a terminal; use --core or --with-bot for noninteractive installation." >&2
+ exit 2
+fi
 
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 info() { printf '[X-Tunnel] %s\n' "$*"; }
@@ -70,6 +88,18 @@ if [ ! -f "$PROJECT_DIR/x-tunnel.yaml" ]; then
 fi
 if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env"; fi
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
+# Make the menu available even before the core service has been installed.
+if [ -f "$PROJECT_DIR/menu.sh" ]; then
+ printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/xtunnel-menu
+ chmod 0755 /usr/bin/xtunnel-menu
+fi
+if [ "$MENU_MODE" -eq 1 ]; then
+ info 'Opening OpenWrt setup and management menu (core/Bot are optional).'
+ # Remove the downloaded temporary files before replacing this shell.
+ rm -rf "$TMP_DIR"
+ trap - EXIT HUP INT TERM
+ exec /bin/sh "$PROJECT_DIR/menu.sh"
+fi
 if [ "$created" -eq 1 ] || grep -q 'example.com\|替换为' "$PROJECT_DIR/x-tunnel.yaml"; then
  info "Edit $PROJECT_DIR/x-tunnel.yaml, then rerun."
  exit 0
