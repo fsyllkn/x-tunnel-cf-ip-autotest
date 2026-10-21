@@ -37,10 +37,38 @@ fi
 [ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
 printf 'Detected platform: %s (core-only by default)\n' "$PLATFORM"
 
+# Refresh package indexes only once. Third-party feed failures must not
+# prevent installing dependencies from healthy feeds (OpenWrt 24.x opkg).
+PKG_REFRESH_ATTEMPTED=0
 install_missing() {
- if command -v apk >/dev/null 2>&1; then apk update && apk add "$@"
- elif command -v opkg >/dev/null 2>&1; then opkg update && opkg install "$@"
- else echo "Missing apk/opkg for dependencies: $*" >&2; return 1; fi
+    [ "$#" -gt 0 ] || return 0
+    if command -v apk >/dev/null 2>&1; then
+        manager=apk
+    elif command -v opkg >/dev/null 2>&1; then
+        manager=opkg
+    else
+        echo "[ERROR] Cannot install $*: neither apk nor opkg is available." >&2
+        return 1
+    fi
+    if [ "$PKG_REFRESH_ATTEMPTED" -eq 0 ]; then
+        PKG_REFRESH_ATTEMPTED=1
+        if ! "$manager" update; then
+            echo "[WARN] $manager update was incomplete (some package feeds may be unavailable)." >&2
+            echo "[WARN] Trying to install required packages from the available indexes." >&2
+        fi
+    fi
+    if [ "$manager" = apk ]; then
+        "$manager" add "$@" || {
+            echo "[ERROR] apk could not install: $*" >&2
+            return 1
+        }
+    else
+        "$manager" install "$@" || {
+            echo "[ERROR] opkg could not install: $*" >&2
+            echo "[ERROR] Check feed URLs, architecture and availability; no feed configuration was changed." >&2
+            return 1
+        }
+    fi
 }
 command -v python3 >/dev/null 2>&1 || install_missing python3-light
 python3 -c 'import yaml' >/dev/null 2>&1 || install_missing python3-yaml
