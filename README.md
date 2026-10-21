@@ -101,42 +101,134 @@ sh uninstall.sh
 
    安装脚本默认不改变 timer 的启用状态。定时器执行 `x-tunnel-speedtest.service`，也可以从 Telegram 发送 `/speedtest` 手动启动完整自动测速。专用 Bot 私聊白名单还可使用 `/restartxtunnel`（或 `/restart`）重启 `x-tunnel.service`。
 
-## OpenWrt 安装
+## OpenWrt / iStoreOS 安装
 
-OpenWrt 使用 procd 管理常驻的 X-Tunnel supervisor 与 Telegram Bot；测速任务由 Bot 直接后台启动，运行日志写入 `cfip-data/openwrt-speedtest.log`。安装器会检测 OpenWrt 并安装 `/etc/init.d/x-tunnel` 与 `/etc/init.d/x-tunnel-speedtest-bot`，不调用 systemd。当前内核下载和 ELF 校验仅支持 `x86_64` 与 `aarch64`；其他架构暂不支持此安装器。
+适用于新版 OpenWrt/iStoreOS（`apk`）及旧版 OpenWrt（`opkg`），使用 **procd** 管理 X-Tunnel 主服务和 Telegram Bot，无须 systemd。安装器不再依赖 GNU `install` 命令，支持 `x86_64/amd64` 与 `aarch64/arm64` 的 Linux 内核。需 root 权限、正常网络及足够的持久化空间。
 
-先通过设备现有包管理器安装依赖。包名会随 OpenWrt 分支和架构略有不同，可先检查对应 feed 是否提供这些包：
+### 一键安装（推荐）
 
-```sh
-# opkg 系统示例
-opkg update
-opkg install python3-light python3-codecs python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+先下载并检查安装脚本，然后执行：
 
-# apk 系统示例
+~~~sh
+curl -fL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/main/quick-install.sh -o /tmp/x-tunnel-quick-install.sh
+cat /tmp/x-tunnel-quick-install.sh
+sh /tmp/x-tunnel-quick-install.sh
+~~~
+
+脚本自动检测 `apk` / `opkg`，按需补齐 Python、PyYAML、IDNA、HTTPS 与网络工具依赖，下载仓库，并调用项目的 `install.sh` 安装 procd 服务。OpenWrt 默认安装路径：`/overlay/x-tunnel-cf-ip-autotest`；若无 `/overlay` 则使用 `/root/x-tunnel-cf-ip-autotest`。自定义目录示例：
+
+~~~sh
+X_TUNNEL_INSTALL_DIR=/你的/绝对路径 sh /tmp/x-tunnel-quick-install.sh
+~~~
+
+已有 Git 仓库目录时，脚本使用 `git pull --ff-only` 更新；不覆盖现有的 `x-tunnel.yaml`、`speedtest-bot.env` 与 `project.env`。如果此前克隆到了自定义位置，请指定相同路径，否则可能产生第二份安装。
+
+**首次安装采用两步流程：** 第一次生成配置模板后会停止，不会启动服务。编辑并填写真实参数，再运行相同的一键安装命令：
+
+~~~sh
+cd /overlay/x-tunnel-cf-ip-autotest
+vi x-tunnel.yaml
+vi speedtest-bot.env
+vi project.env
+chmod 600 x-tunnel.yaml speedtest-bot.env
+sh /tmp/x-tunnel-quick-install.sh
+~~~
+
+- `x-tunnel.yaml`：节点行格式为 `名称|服务地址|token|cfip|连接数|端口`；填入真实节点、密钥和优选 IP。
+- `speedtest-bot.env`：填入 Telegram BotFather 提供的 `TG_TOKEN` 和私聊数字 `TG_CHATID`。**当前安装器必须校验这两项，暂不支持跳过 Bot 凭据完成一键安装。**
+- `project.env`：`X_TUNNEL_LOCAL_PROXY` 默认指向 `http://127.0.0.1:7890`，仅在本机存在该 HTTP 代理时有效。若代理实际位于另一台局域网设备，应改为经测试可访问的对应地址。`X_TUNNEL_TG_PROXY` 可设置 Telegram 专用代理。
+- 私有配置包含凭据，请勿提交到 GitHub 或公开日志。
+
+### 手动安装与依赖
+
+新版 OpenWrt/iStoreOS 的依赖安装命令：
+
+~~~sh
 apk update
 apk add python3-light python3-codecs python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
-```
+~~~
 
-OpenWrt 精简 Python 环境必须具备 `encodings.idna` 编码器，否则 Telegram Bot 使用 HTTPS 代理时可能出现 `LookupError: unknown encoding: idna`。安装前可执行 `python3 -c 'import codecs; codecs.lookup("idna")'` 验证。缺失时通过 `apk add python3-codecs`（或旧版 `opkg install python3-codecs`）补齐。安装器也会在启动服务前检查该编码器并报告明确错误。
+旧版 OpenWrt 使用：
 
-建议把项目放到有足够可写空间的持久化存储中（例如 USB/extroot），然后按常规步骤准备 `x-tunnel.yaml`、`speedtest-bot.env` 和 `project.env`，执行：
+~~~sh
+opkg update
+opkg install python3-light python3-codecs python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+~~~
 
-```sh
-chmod +x install.sh
-./install.sh
-```
+不同固件的软件包拆分可能略有区别。若安装 `git` 后出现 `git: 'remote-https' is not a git command`，安装 `git-http`；也可以直接使用上述一键入口下载源码，无需 Git。
 
-每天 18:00（设备本地时区）运行测速可执行 `./install.sh --enable-timer`。安装器会将任务加入 `/etc/crontabs/root` 并启用 cron。OpenWrt 安装中通过 Bot 启动的测速进程输出到 `cfip-data/openwrt-speedtest.log`。
+手动拉取源码、准备配置并安装（已安装 git 和上述依赖）：
 
-```sh
+~~~sh
+cd /overlay
+git clone https://github.com/fsyllkn/x-tunnel-cf-ip-autotest.git
+cd x-tunnel-cf-ip-autotest
+cp x-tunnel.example.yaml x-tunnel.yaml
+cp speedtest-bot.env.example speedtest-bot.env
+cp project.env.example project.env
+chmod 600 x-tunnel.yaml speedtest-bot.env
+# 编辑 3 个配置文件后执行
+sh install.sh
+~~~
+
+可用下面命令检测 PyYAML 和 IDNA 编码支持：
+
+~~~sh
+python3 -c 'import yaml; print("PyYAML OK")'
+python3 -c 'import codecs; codecs.lookup("idna"); print("IDNA OK")'
+~~~
+
+如出现 `LookupError: unknown encoding: idna`，说明精简版 Python 缺少 `python3-codecs`，会导致 Telegram Bot 的 HTTPS 代理请求失败。若 `apk` 报数据库锁定，请先检查其他软件安装进程，不要强制删除包数据库。
+
+### 启停、日志和自动测速
+
+~~~sh
 /etc/init.d/x-tunnel status
-/etc/init.d/x-tunnel restart
 /etc/init.d/x-tunnel-speedtest-bot status
-logread -e x-tunnel
-tail -f /home/x-tunnel/cfip-data/openwrt-speedtest.log
-```
+/etc/init.d/x-tunnel restart
+/etc/init.d/x-tunnel-speedtest-bot restart
+logread | tail -n 80
+tail -f /overlay/x-tunnel-cf-ip-autotest/cfip-data/openwrt-speedtest.log
+~~~
 
-若项目不在 `/home/x-tunnel`，查看日志时将示例路径替换为实际项目目录。测速需要可用的 `ip` 路由工具及足够空间保存 Python 运行环境和测速数据；低存储路由器建议只运行 X-Tunnel 节点服务，不安装 Bot 与自动测速。
+两个常驻服务由 procd 管理，启用后可随系统启动。`not running` 时应检查完整 Python Traceback；仅用 `logread -e x-tunnel` 过滤可能漏掉错误末尾。Bot 的 `/start`、`/topspeed` 可测试功能；`/speedtest` 会启动测速，合格结果可能更新节点 CF IP。
+
+可选：每天 **18:00（设备本地时区）** 进行自动测速，任务写入 `/etc/crontabs/root`，由 cron 执行：
+
+~~~sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh install.sh --enable-timer
+~~~
+
+项目 Provider 默认生成在 `runtime/x-tunnel-provider.json`。ShellCrash 的本地 Provider 引用需用户手动配置；安装器不会更改 ShellCrash 配置、重启其服务或修改其防火墙。
+
+### 卸载和重新安装
+
+**保留配置的卸载（推荐用于重装测试）：**
+
+~~~sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh uninstall.sh
+~~~
+
+这会移除本项目创建的两个 procd 服务及定时测速任务，**保留项目目录、私有配置、测速报告、`/usr/bin/x-tunnel` 内核和 Python 依赖**；也不会删除或修改 ShellCrash。检查服务是否已移除：
+
+~~~sh
+ls -l /etc/init.d/x-tunnel /etc/init.d/x-tunnel-speedtest-bot
+~~~
+
+然后重新运行 `sh /tmp/x-tunnel-quick-install.sh`；已有真实配置时会直接进入服务安装阶段。为确保使用最新版脚本，推荐重新下载一键安装入口。
+
+**完全清理项目目录（请先备份密钥）：**
+
+~~~sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh uninstall.sh --purge
+~~~
+
+需要输入 `DELETE` 确认，删除本项目目录、节点与 Bot 凭据、测速历史和生成的 Provider；但仍保留共享内核 `/usr/bin/x-tunnel` 及系统 Python 依赖。此方式适合测试从空白配置开始的完整首次安装。
+
+**注意：** 一键安装和卸载脚本尚未在所有固件版本上完成端到端验证。遇到发行版包名差异或服务失败，请提供完整安装输出和 `logread` 日志。
 
 ## 测速与分流行为
 
