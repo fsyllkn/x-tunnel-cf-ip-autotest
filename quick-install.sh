@@ -90,7 +90,11 @@ if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.exampl
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
 # Make the menu available even before the core service has been installed.
 if [ -f "$PROJECT_DIR/menu.sh" ]; then
- if [ -e /usr/bin/x-t ] || [ -L /usr/bin/x-t ]; then
+ if [ -L /usr/bin/x-t ]; then
+    echo '/usr/bin/x-t is a symlink; refusing to overwrite it.' >&2
+    exit 1
+  fi
+  if [ -e /usr/bin/x-t ]; then
   grep -Fq "$PROJECT_DIR/menu.sh" /usr/bin/x-t 2>/dev/null || fail '/usr/bin/x-t is already used by another program.'
  fi
  printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/x-t
