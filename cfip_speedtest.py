@@ -14,7 +14,6 @@ import shlex
 import signal
 import socket
 import ssl
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -48,6 +47,34 @@ IPS_PER_REGIONAL_ROUND = 2
 MAX_NODE_CF_IPS = 2
 EARLY_DISCARD_SECONDS = 3.0
 DEFAULT_SPEED_DURATION = 30.0
+
+# OpenWrt python3-light may not bundle decimal/fractions, which the standard
+# library's statistics module imports. These three numeric operations are all
+# we need for RTT and speed-window aggregation; avoid adding python3-decimal.
+def arithmetic_mean(values):
+    values = list(values)
+    if not values:
+        raise ValueError("mean requires at least one value")
+    return sum(values) / len(values)
+
+
+def numeric_median(values):
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("median requires at least one value")
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def population_stddev(values, mean_value=None):
+    if not values:
+        raise ValueError("population standard deviation requires values")
+    if mean_value is None:
+        mean_value = arithmetic_mean(values)
+    return (sum((value - mean_value) ** 2 for value in values) / len(values)) ** 0.5
+
 
 
 def direct_read(url, timeout=8):
@@ -193,7 +220,7 @@ def test_rtt(ip, port, use_tls):
     colos = [item["colo"] for item in measurements if item["colo"]]
     colo = max(set(colos), key=colos.count) if colos else ""
     return {
-        "latency_ms": round(statistics.mean(item["latency_ms"] for item in measurements)),
+        "latency_ms": round(arithmetic_mean(item["latency_ms"] for item in measurements)),
         "colo": colo,
     }
 
@@ -397,9 +424,9 @@ def download_speed(
             if require_discard_window:
                 return None
             stable_windows = [rate for _, _, rate in windows]
-        average_kib = statistics.mean(stable_windows)
-        median_kib = statistics.median(stable_windows)
-        variation = statistics.pstdev(stable_windows) / average_kib if average_kib else 1.0
+        average_kib = arithmetic_mean(stable_windows)
+        median_kib = numeric_median(stable_windows)
+        variation = population_stddev(stable_windows, average_kib) / average_kib if average_kib else 1.0
         return {
             "ip": ip,
             "tcp_ms": tcp_ms,
