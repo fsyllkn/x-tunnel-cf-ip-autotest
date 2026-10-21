@@ -46,6 +46,15 @@ prepare() {
   fi
   case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
 }
+can_check_config() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  case "$1" in
+    x-tunnel.yaml) python3 -c 'import yaml, logging' >/dev/null 2>&1 ;;
+    speedtest-bot.env) python3 -c 'import urllib.request, codecs; codecs.lookup("idna")' >/dev/null 2>&1 ;;
+    project.env) python3 -c 'import pathlib, shlex' >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
 check_config() {
   case "$1" in
     x-tunnel.yaml) PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' ;;
@@ -65,7 +74,9 @@ edit_file() {
   say "配置已备份: $backup"
   vi "$file" || { say '编辑未完成。'; return; }
   case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
-  if check_config "$file"; then
+  if ! can_check_config "$file"; then
+    say '配置已保存。此设备尚缺少对应 Python 模块，安装所需功能时将检查配置。'
+  elif check_config "$file"; then
     say '校验成功。节点配置会自动重载；其他变量修改后请重启相关服务。'
   else
     say '配置校验失败，暂不要重启服务。'
@@ -94,17 +105,21 @@ manage_svc() {
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
-  prepare speedtest-bot.env speedtest-bot.env.example || return
   prepare project.env project.env.example || return
-  say 'OpenWrt 默认仅安装核心服务；Bot 可选安装。'
-  if ask '执行安装或修复服务？'; then
+  if grep -q 'example.com\|替换为' x-tunnel.yaml; then
+    say '检测到节点示例配置。请先填写真实 X-Tunnel 服务地址和密钥。'
+    if ask '现在编辑节点配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
+    return
+  fi
+  say '轻量核心模式：只部署 X-Tunnel 和 Provider，不要求 TG Bot 凭据。'
+  if ask '安装/修复核心服务（会重启 X-Tunnel）？'; then
     sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
   fi
 }
 update_code() {
   root_only || return
   ask '从 GitHub 更新代码并重新部署（将重启服务）？' || return
-  if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh"; then
+  if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh" --core; then
     say '更新结束，重新载入管理菜单。'
     exec /bin/sh "$PROJECT_DIR/menu.sh"
   else
@@ -166,7 +181,11 @@ show_menu() {
   say '=========================================================='
   say '                 X-Tunnel 管理菜单'
   say '=========================================================='
-  printf '平台: %s  项目路径: %s\n' "$PLATFORM" "$PROJECT_DIR"
+  if command -v opkg >/dev/null 2>&1; then manager=opkg
+  elif command -v apk >/dev/null 2>&1; then manager=apk
+  else manager='未检测到'; fi
+  printf '平台: %s  包管理: %s\n' "$PLATFORM" "$manager"
+  printf '项目路径: %s\n' "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
   say ' 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支'
@@ -196,12 +215,24 @@ while :; do
     11)
       for file in x-tunnel.yaml speedtest-bot.env project.env; do
         if [ -f "$file" ]; then
-          if check_config "$file"; then say "$file: OK"; else say "$file: INVALID"; fi
+          if ! can_check_config "$file"; then say "$file: 等待安装依赖后校验"
+          elif check_config "$file"; then say "$file: OK"
+          else say "$file: INVALID"; fi
         else say "$file: 未配置"; fi
       done;;
     13)
       root_only || continue
-      if ask '安装 Telegram Bot 及测速依赖？'; then sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'; fi;;
+      prepare speedtest-bot.env speedtest-bot.env.example || continue
+      prepare project.env project.env.example || continue
+      if grep -q '替换为' speedtest-bot.env; then
+        say '先填写 TG_TOKEN、TG_CHATID，并确认 project.env 中的 Telegram 代理地址。'
+        if ask '现在编辑 Telegram Bot 配置？'; then edit_file speedtest-bot.env speedtest-bot.env.example; fi
+      else
+        say '将按需安装 HTTPS/IDNA 和 ip-full 等组件，然后启动 Bot。'
+        if ask '安装/启用 Bot（将重启核心服务）？'; then
+          sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'
+        fi
+      fi;;
     14)
       root_only || continue
       sh "$PROJECT_DIR/install.sh" --disable-bot || say '关闭 Bot 失败。';;
