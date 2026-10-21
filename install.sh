@@ -210,6 +210,10 @@ if [ "$OPENWRT" -eq 1 ]; then
         /etc/init.d/cron enable
         /etc/init.d/cron start
     fi
+    if [ -f "$PROJECT_DIR/menu.sh" ]; then
+        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/bin/xtunnel-menu
+        chmod 0755 /usr/bin/xtunnel-menu
+    fi
     printf 'Installed X-Tunnel procd services from %s\n' "$PROJECT_DIR"
     printf 'Status: /etc/init.d/x-tunnel status; logread -e x-tunnel\n'
     if [ "$ENABLE_TIMER" -eq 0 ]; then
@@ -257,6 +261,10 @@ else
         systemctl enable --now x-tunnel-speedtest.timer
     fi
 
+    if [ -f "$PROJECT_DIR/menu.sh" ]; then
+        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/local/bin/xtunnel-menu
+        chmod 0755 /usr/local/bin/xtunnel-menu
+    fi
     printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
     printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
     if [ "$ENABLE_TIMER" -eq 0 ]; then
