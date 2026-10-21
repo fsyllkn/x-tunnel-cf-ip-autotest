@@ -35,7 +35,13 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 [ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
-printf 'Detected platform: %s (core-only by default)\n' "$PLATFORM"
+mode=core-only
+if [ "$WITH_BOT" -eq 1 ]; then
+    mode=core-plus-telegram-bot
+elif [ "$WITH_SPEEDTEST" -eq 1 ]; then
+    mode=core-plus-speedtest
+fi
+printf 'Detected platform: %s; install mode: %s\n' "$PLATFORM" "$mode"
 
 # Refresh package indexes only once. Third-party feed failures must not
 # prevent installing dependencies from healthy feeds (OpenWrt 24.x opkg).
