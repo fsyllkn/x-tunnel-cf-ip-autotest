@@ -102,6 +102,38 @@ manage_svc() {
     fi
   done
 }
+# Main-menu restart shortcuts. A Bot restart does not touch X-Tunnel nodes.
+restart_service() {
+  root_only || return
+  key=$1
+  name=$(svc_name "$key")
+  if ! svc_exists "$key"; then
+    say "$name 尚未安装，请先安装对应服务。"
+    return
+  fi
+  if [ "$key" = core ]; then
+    ask '重启 X-Tunnel 核心及全部节点？连接会短暂中断。' || return
+  else
+    ask '仅重启 Telegram Bot？不会重启 X-Tunnel 节点。' || return
+  fi
+  say "正在重启 $name ..."
+  if [ "$PLATFORM" = openwrt ]; then
+    if ! "/etc/init.d/$name" restart; then
+      say '重启命令失败，请进入服务管理菜单查看状态并尝试停止/启动。'
+      return 1
+    fi
+  elif [ "$PLATFORM" = systemd ]; then
+    if ! systemctl restart "$name.service"; then
+      say '重启命令失败，请查看服务日志。'
+      return 1
+    fi
+  else
+    say '不支持的服务管理系统。'
+    return 1
+  fi
+  sleep 1
+  printf '%s 当前状态: %s\n' "$name" "$(svc_status "$key")"
+}
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
@@ -192,6 +224,7 @@ show_menu() {
   say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
   say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
   say ' 7) Telegram Bot 服务管理  8) 查看日志'
+  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
   say ' 9) 定时测速管理          10) 立即运行完整测速'
   say '11) 配置检查              12) 卸载服务（保留配置）'
   say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
@@ -209,6 +242,8 @@ while :; do
     5) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
     6) manage_svc core;;
     7) manage_svc bot;;
+    15) restart_service core;;
+    16) restart_service bot;;
     8) show_logs;;
     9) manage_timer;;
     10) run_test;;
