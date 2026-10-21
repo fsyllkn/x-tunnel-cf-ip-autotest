@@ -38,7 +38,7 @@ def launch_speedtest(ip=None):
     log_path = BASE_DIR / "cfip-data" / "openwrt-speedtest.log"
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_file:
-        subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=str(BASE_DIR),
             stdin=subprocess.DEVNULL,
@@ -47,6 +47,7 @@ def launch_speedtest(ip=None):
             start_new_session=True,
             close_fds=True,
         )
+    return process
 
 
 def restart_xtunnel():
