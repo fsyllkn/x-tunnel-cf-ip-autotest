@@ -454,19 +454,68 @@ class DirectCandidateRoutes:
         self.candidates = list(dict.fromkeys(candidates))
         self.routes = []
         self.old_signal_handlers = {}
+        self.route_modes = {}
 
     @staticmethod
-    def policy_mark(family, table):
+    def routing_mode(family, table):
+        """Accept a known marked policy or an unmodified Linux default rule set."""
         rules = subprocess.run(
-            ["ip", family, "rule", "show"], capture_output=True, text=True, check=True,
-        ).stdout
-        for line in rules.splitlines():
-            match = re.search(r"\bfwmark\s+(0x[\da-fA-F]+)(?:/\S+)?\s+lookup\s+%s\b" % table, line)
+            ["ip", family, "rule", "show"],
+            capture_output=True, text=True, timeout=3, check=True,
+        ).stdout.splitlines()
+        for line in rules:
+            match = re.search(
+                r"\bfwmark\s+(0x[\da-fA-F]+)(?:/\S+)?\s+lookup\s+%s\b" % table,
+                line,
+            )
             if match:
-                return match.group(1)
-        raise RuntimeError(
-            "ShellCrash policy route table %s was not found; refusing to test through the proxy" % table
+                return "marked-policy", match.group(1)
+
+        # When the kernel only has the default rules, traffic uses main and
+        # no proxy-specific routing table needs to be created for a speedtest.
+        standard = {
+            "from all lookup local",
+            "from all lookup main",
+            "from all lookup default",
+        }
+        observed = []
+        for line in rules:
+            match = re.match(r"^\s*\d+:\s*(.*?)\s*$", line)
+            if not match or match.group(1) not in standard:
+                raise RuntimeError(
+                    "Unrecognized %s policy rules without fwmark/table %s; "
+                    "refusing to assume direct routing" % (family, table)
+                )
+            observed.append(match.group(1))
+        if "from all lookup main" not in observed:
+            raise RuntimeError("No normal main routing rule for %s" % family)
+        return "native-direct", None
+
+    @staticmethod
+    def verify_native_route(value, family):
+        """Check route via the main table, without changing any kernel routes."""
+        result = subprocess.run(
+            ["ip", family, "route", "get", value],
+            capture_output=True, text=True, timeout=3, check=True,
         )
+        fields = result.stdout.split()
+        if not fields or fields[0] in (
+            "local", "broadcast", "unreachable", "blackhole", "prohibit", "throw"
+        ):
+            raise RuntimeError("Route to %s is not ordinary unicast traffic" % value)
+        if "dev" not in fields or fields.index("dev") + 1 >= len(fields):
+            raise RuntimeError("Cannot determine outgoing interface for %s" % value)
+        device = fields[fields.index("dev") + 1]
+        if re.match(r"^(?:tun|tap|wg|utun|tailscale|zt|ppp|ipsec)\w*", device, re.I):
+            raise RuntimeError(
+                "Route to %s uses tunnel interface %s; refusing unsafe direct test"
+                % (value, device)
+            )
+        if "table" in fields:
+            index = fields.index("table") + 1
+            if index >= len(fields) or fields[index] not in ("main", "254"):
+                raise RuntimeError("Route to %s does not use the main table" % value)
+        print("Native route to %s via %s; no policy route changes" % (value, device), flush=True)
 
     @staticmethod
     def route_command(route, operation):
@@ -548,7 +597,14 @@ class DirectCandidateRoutes:
         address = ipaddress.ip_address(value)
         family = "-6" if address.version == 6 else "-4"
         table = "101" if address.version == 6 else "100"
-        mark = self.policy_mark(family, table)
+        if family not in self.route_modes:
+            self.route_modes[family] = self.routing_mode(family, table)
+            print("Speedtest route mode for %s: %s" %
+                  (family, self.route_modes[family][0]), flush=True)
+        mode, mark = self.route_modes[family]
+        if mode == "native-direct":
+            self.verify_native_route(value, family)
+            return
         route = subprocess.run(
             ["ip", family, "route", "get", value],
             capture_output=True, text=True, timeout=3, check=True,
@@ -603,7 +659,11 @@ class DirectCandidateRoutes:
         except BaseException:
             self.__exit__(None, None, None)
             raise
-        print("Installed temporary direct bypass routes for %d candidate IP(s)" % len(self.routes), flush=True)
+        if self.routes:
+            print("Installed temporary direct bypass routes for %d candidate IP(s)" % len(self.routes), flush=True)
+        else:
+            print("Native routing validated for %d candidate IP(s); no routes added" %
+                  len(self.candidates), flush=True)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
