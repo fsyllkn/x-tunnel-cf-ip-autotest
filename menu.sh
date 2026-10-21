@@ -222,6 +222,11 @@ while :; do
       done;;
     13)
       root_only || continue
+      prepare x-tunnel.yaml x-tunnel.example.yaml || continue
+      if grep -q 'example.com\|替换为' x-tunnel.yaml; then
+        say '请先在选项 5 配置真实节点，再安装 Telegram Bot。'
+        continue
+      fi
       prepare speedtest-bot.env speedtest-bot.env.example || continue
       prepare project.env project.env.example || continue
       if grep -q '替换为' speedtest-bot.env; then
@@ -235,7 +240,13 @@ while :; do
       fi;;
     14)
       root_only || continue
-      sh "$PROJECT_DIR/install.sh" --disable-bot || say '关闭 Bot 失败。';;
+      if [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
+        /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
+        /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
+        say 'Bot 已停止并取消开机自启；X-Tunnel 核心服务未重启。'
+      else
+        say 'Bot 服务尚未安装。'
+      fi;;
     12)
       root_only || continue
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
