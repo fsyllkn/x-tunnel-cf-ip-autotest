@@ -24,6 +24,28 @@
 
 `X-Tunnel-ShellCrash-Loop-Fix.md` 是旧版自动联动方案的历史文档；当前项目不再自动改写 ShellCrash 路由、防火墙或重启服务。
 
+## 一键安装与卸载（OpenWrt / Linux）
+
+支持新版 OpenWrt `apk`、旧版 `opkg` 和 Debian/Ubuntu `apt-get`。自动补齐常用 Python 依赖，下载仓库并保留已有私有配置。首次使用时会创建节点与 Telegram 配置模板，**必须编辑并再次执行安装命令**，才会注册服务。
+
+在 root 终端运行（建议先查看脚本内容）：
+
+```sh
+curl -fL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/main/quick-install.sh -o /tmp/x-tunnel-quick-install.sh
+sh /tmp/x-tunnel-quick-install.sh
+```
+
+OpenWrt 默认部署到 `/overlay/x-tunnel-cf-ip-autotest`，Linux systemd 默认 `/opt/x-tunnel-cf-ip-autotest`；可通过 `X_TUNNEL_INSTALL_DIR` 指定绝对路径。已有 Git 克隆目录会执行 `git pull --ff-only`，不覆盖私有 `x-tunnel.yaml`、`speedtest-bot.env` 或 `project.env`。
+
+清理已部署的服务和项目 cron（保留配置及目录）：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh uninstall.sh
+```
+
+需要**额外删除本项目目录和私有配置**时可执行 `sh uninstall.sh --purge` 并输入 `DELETE` 确认。两种方式均不删除共享的 `/usr/bin/x-tunnel` 内核、不卸载 Python 依赖、不改动 ShellCrash 配置。此脚本尚未在所有 OpenWrt 设备上实机验证，安装后请检查 procd 状态与日志。
+
 ## 部署
 
 适用环境：systemd Linux 或 OpenWrt、root 权限、Python 3 与 PyYAML。ShellCrash 不是 X-Tunnel 安装器的依赖。安装器自动识别 `x86_64/amd64` 或 `aarch64/arm64`。若 `/usr/bin/x-tunnel` 不存在，会从官方 GitHub Releases 下载匹配架构的 Linux 内核，校验 ELF 架构并运行 `-h` 启动检查后安装；若内核已存在则保留原文件，仅校验架构并补齐 `0755` 权限。自动下载目前支持上述两种 64 位架构，其他架构需自行准备兼容内核。
