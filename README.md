@@ -88,12 +88,14 @@ OpenWrt 使用 procd 管理常驻的 X-Tunnel supervisor 与 Telegram Bot；测�
 ```sh
 # opkg 系统示例
 opkg update
-opkg install python3-light python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+opkg install python3-light python3-codecs python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
 
 # apk 系统示例
 apk update
-apk add python3-light python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
+apk add python3-light python3-codecs python3-yaml python3-urllib python3-openssl python3-logging ip-full curl ca-bundle
 ```
+
+OpenWrt 精简 Python 环境必须具备 `encodings.idna` 编码器，否则 Telegram Bot 使用 HTTPS 代理时可能出现 `LookupError: unknown encoding: idna`。安装前可执行 `python3 -c 'import codecs; codecs.lookup("idna")'` 验证。缺失时通过 `apk add python3-codecs`（或旧版 `opkg install python3-codecs`）补齐。安装器也会在启动服务前检查该编码器并报告明确错误。
 
 建议把项目放到有足够可写空间的持久化存储中（例如 USB/extroot），然后按常规步骤准备 `x-tunnel.yaml`、`speedtest-bot.env` 和 `project.env`，执行：
 
