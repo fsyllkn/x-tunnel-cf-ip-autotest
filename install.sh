@@ -37,7 +37,23 @@ fi
 [ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
 printf 'Detected platform: %s (core-only by default)\n' "$PLATFORM"
 
-required_commands="ip sed cp chmod mkdir mv python3 uname"
+install_missing() {
+ if command -v apk >/dev/null 2>&1; then apk update && apk add "$@"
+ elif command -v opkg >/dev/null 2>&1; then opkg update && opkg install "$@"
+ else echo "Missing apk/opkg for dependencies: $*" >&2; return 1; fi
+}
+command -v python3 >/dev/null 2>&1 || install_missing python3-light
+python3 -c 'import yaml' >/dev/null 2>&1 || install_missing python3-yaml
+python3 -c 'import logging' >/dev/null 2>&1 || install_missing python3-logging
+if [ "$WITH_SPEEDTEST" -eq 1 ]; then
+ missing=""
+ command -v ip >/dev/null 2>&1 || missing="$missing ip-full"
+ python3 -c 'import codecs; codecs.lookup("idna")' >/dev/null 2>&1 || missing="$missing python3-codecs"
+ python3 -c 'import ssl' >/dev/null 2>&1 || missing="$missing python3-openssl"
+ python3 -c 'import urllib.request' >/dev/null 2>&1 || missing="$missing python3-urllib"
+ if [ -n "$missing" ]; then install_missing $missing ca-bundle; fi
+fi
+required_commands="sed cp chmod mkdir mv python3 uname"
 if [ "$OPENWRT" -eq 0 ]; then
     required_commands="$required_commands systemctl"
 fi
@@ -135,28 +151,23 @@ fi
     echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
 }
-[ -f "$PROJECT_DIR/speedtest-bot.env" ] || {
-    copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
-    echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun." >&2
-    exit 1
-}
+if [ "$WITH_BOT" -eq 1 ]; then
+ if [ ! -f "$PROJECT_DIR/speedtest-bot.env" ]; then
+  copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
+  echo 'Edit speedtest-bot.env then rerun --with-bot.' >&2
+  exit 1
+ fi
+ chmod 0600 "$PROJECT_DIR/speedtest-bot.env"
+fi
 if [ ! -f "$PROJECT_DIR/project.env" ]; then
     copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
 fi
-chmod 0600 "$PROJECT_DIR/speedtest-bot.env" "$PROJECT_DIR/x-tunnel.yaml"
+chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
 chmod 0644 "$PROJECT_DIR/project.env"
 
-# OpenWrt's python3-light may omit standard library IDNA codecs.
-# urllib's HTTPS proxy tunnel setup requires this codec.
-python3 -c 'import codecs; codecs.lookup("idna")' >/dev/null 2>&1 || {
-    if [ "$OPENWRT" -eq 1 ]; then
-        echo "Python IDNA codec is missing. Install python3-codecs using apk add or opkg install." >&2
-    else
-        echo "Python IDNA codec is missing. Install the complete Python 3 standard library." >&2
-    fi
-    exit 1
-}
-
+if [ "$WITH_SPEEDTEST" -eq 1 ]; then
+ python3 -c 'import codecs, ssl, urllib.request; codecs.lookup("idna")' >/dev/null 2>&1 || { echo 'Missing HTTPS/IDNA modules.' >&2; exit 1; }
+fi
 python3 -c 'import yaml' >/dev/null 2>&1 || {
     if [ "$OPENWRT" -eq 1 ]; then
         echo "Python dependency PyYAML is missing (install python3-yaml with opkg/apk)." >&2
@@ -169,6 +180,7 @@ PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(c
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
+if [ "$WITH_BOT" -eq 1 ]; then
 python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
 import pathlib
 import shlex
@@ -185,6 +197,8 @@ if not values.get("TG_TOKEN") or "替换为" in values["TG_TOKEN"]:
 if not values.get("TG_CHATID", "").isdecimal():
     raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
 PY
+fi
+
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
 mkdir -p /run/lock
 chmod 0755 "$PROJECT_DIR/runtime"
@@ -195,7 +209,9 @@ if [ "$OPENWRT" -eq 1 ]; then
         echo "OpenWrt procd init system was not found." >&2
         exit 1
     }
-    for service in x-tunnel x-tunnel-speedtest-bot; do
+    services="x-tunnel"
+    [ "$WITH_BOT" -eq 0 ] || services="$services x-tunnel-speedtest-bot"
+    for service in $services; do
         temporary="/etc/init.d/$service.tmp"
         sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/openwrt/$service.init" > "$temporary"
         chmod 0755 "$temporary"
@@ -204,6 +220,10 @@ if [ "$OPENWRT" -eq 1 ]; then
         "/etc/init.d/$service" stop >/dev/null 2>&1 || true
         "/etc/init.d/$service" start
     done
+    if [ "$DISABLE_BOT" -eq 1 ] && [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
+        /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
+        /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
+    fi
     if [ "$ENABLE_TIMER" -eq 1 ]; then
         cron_entry="0 18 * * * /bin/sh '$PROJECT_DIR/openwrt/run-speedtest.sh' >> '$PROJECT_DIR/cfip-data/cron.log' 2>&1"
         cron_marker="# x-tunnel-cf-ip-autotest daily speedtest"
@@ -223,56 +243,5 @@ if [ "$OPENWRT" -eq 1 ]; then
     printf 'Status: /etc/init.d/x-tunnel status; logread -e x-tunnel\n'
     if [ "$ENABLE_TIMER" -eq 0 ]; then
         printf 'Daily 18:00 speed test unchanged; install with --enable-timer to add the cron job.\n'
-    fi
-else
-    for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-bot.service x-tunnel-speedtest.timer x-tunnel-speedtest-single@.service; do
-        temporary="/etc/systemd/system/$unit.tmp"
-        sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/systemd/$unit" > "$temporary"
-        chmod 0644 "$temporary"
-        mv -f "$temporary" "/etc/systemd/system/$unit"
-    done
-
-    bypass_units="x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-single@.service"
-    if [ -r /etc/group ] && awk -F: '$1 == "shellcrash" && $3 == 7890 { found = 1 } END { exit !found }' /etc/group; then
-        for unit in $bypass_units; do
-            dropin_dir="/etc/systemd/system/$unit.d"
-            temporary="$dropin_dir/shellcrash-bypass.conf.tmp"
-            mkdir -p "$dropin_dir"
-            chmod 0755 "$dropin_dir"
-            printf '%s\n' '[Service]' 'Group=7890' > "$temporary"
-            chmod 0644 "$temporary"
-            mv -f "$temporary" "$dropin_dir/shellcrash-bypass.conf"
-        done
-        printf 'Detected ShellCrash bypass group (GID 7890); configured X-Tunnel and speed-test services to use it.\n'
-    else
-        for unit in $bypass_units; do
-            dropin="/etc/systemd/system/$unit.d/shellcrash-bypass.conf"
-            rm -f "$dropin" "$dropin.tmp"
-        done
-        printf 'ShellCrash bypass group (GID 7890) not found; X-Tunnel services keep the default group.\n'
-    fi
-
-    systemctl daemon-reload
-    systemctl enable x-tunnel.service x-tunnel-speedtest-bot.service
-    for unit in x-tunnel.service x-tunnel-speedtest-bot.service; do
-        if systemctl is-active --quiet "$unit"; then
-            systemctl restart "$unit"
-        else
-            systemctl start "$unit"
-        fi
-    done
-
-    if [ "$ENABLE_TIMER" -eq 1 ]; then
-        systemctl enable --now x-tunnel-speedtest.timer
-    fi
-
-    if [ -f "$PROJECT_DIR/menu.sh" ]; then
-        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/local/bin/xtunnel-menu
-        chmod 0755 /usr/local/bin/xtunnel-menu
-    fi
-    printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
-    printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
-    if [ "$ENABLE_TIMER" -eq 0 ]; then
-        printf 'Daily 18:00 (Asia/Shanghai) timer unchanged; enable with: systemctl enable --now x-tunnel-speedtest.timer\n'
     fi
 fi
