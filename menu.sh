@@ -224,10 +224,10 @@ show_menu() {
   say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
   say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
   say ' 7) Telegram Bot 服务管理  8) 查看日志'
-  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
   say ' 9) 定时测速管理          10) 立即运行完整测速'
   say '11) 配置检查              12) 卸载服务（保留配置）'
   say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
+  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
   say ' 0) 退出'
 }
 while :; do
@@ -242,8 +242,6 @@ while :; do
     5) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
     6) manage_svc core;;
     7) manage_svc bot;;
-    15) restart_service core;;
-    16) restart_service bot;;
     8) show_logs;;
     9) manage_timer;;
     10) run_test;;
@@ -287,6 +285,8 @@ while :; do
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
         sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
       fi;;
+    15) restart_service core;;
+    16) restart_service bot;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
