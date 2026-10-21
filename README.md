@@ -10,37 +10,51 @@
 - 保留原有 cfip_speedtest.py 功能，但测速启动时仍会使用 CPU、RAM、网络吞吐和临时路由；**不是无 Python 的纯 Shell 实现**。
 - 仅支持 x86_64 / aarch64 下载现有 X-Tunnel Linux 内核；内核还需满足 musl/ABI 的实际运行要求。
 
-## 一键安装
+## 首次安装：交互式菜单（推荐）
 
-在 OpenWrt root SSH 终端中：
+支持 OpenWrt 24.x / ImmortalWrt 等旧版 `opkg` 固件，也兼容使用 `apk` 的新版 OpenWrt。安装入口只需 BusyBox 的 `sh`、`tar` 和系统自带的 `wget` 或 `curl`，**打开菜单时不需要提前安装 Python**；选定功能后才由安装器检查和补齐相关依赖。
+
+在 root SSH 终端运行：
 
 ```sh
 wget -O /tmp/xtunnel-openwrt.sh https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/openwrt/quick-install.sh
 sh /tmp/xtunnel-openwrt.sh
 ```
 
-默认部署到 `/overlay/x-tunnel-cf-ip-autotest`。首次安装会生成 `x-tunnel.yaml`，请编辑真实节点配置后重新执行一键安装命令。已存在的私有配置不会主动被覆盖。
+运行后会下载最新 `openwrt` 分支代码、保留已有节点与变量配置、创建缺少的示例模板，并直接进入管理菜单。**不会因为进入菜单就自动安装或重启服务。**
 
-**可选功能：**
+首次部署顺序推荐：先选择 **5 编辑节点配置**，填入真实的服务地址/Token；再选择 **1 安装核心服务**。需要 Telegram Bot 时，选择 **3 设置 Bot**，并在 `project.env` 中填写可用代理，然后选择 **13 安装/启用 Bot**。不使用 Bot 的低内存设备只需安装核心服务。
+
+菜单包括核心安装、GitHub 更新、Bot 设置、变量/节点编辑、服务启停、日志、定时测速及卸载。配置编辑通过路由器自带的 `vi` 进行，编辑前自动备份。管理菜单显示当前 `opkg`/`apk` 和两个服务状态。
+
+安装目录默认 `/overlay/x-tunnel-cf-ip-autotest`；如果没有 `/overlay`，会使用 `/root/x-tunnel-cf-ip-autotest`。已有 Git checkout 需要位于 `openwrt` 分支，安装器不会擅自将 `main` 切换为 `openwrt`。可通过 `X_TUNNEL_INSTALL_DIR` 指定其他绝对路径。
+
+安装后可在任何目录执行：
 
 ```sh
-# 仅核心服务（默认）
-sh /tmp/xtunnel-openwrt.sh
-
-# 额外安装 Telegram Bot + 测速依赖（先配置 TG_TOKEN 和 TG_CHATID）
-sh /tmp/xtunnel-openwrt.sh --with-bot
-
-# 不启动 Bot，只准备测速依赖
-sh /tmp/xtunnel-openwrt.sh --with-speedtest
-
-# 开启每天本地时间 18:00 自动测速
-sh /tmp/xtunnel-openwrt.sh --enable-timer
-
-# 停止/禁用之前安装的 Bot
-sh /tmp/xtunnel-openwrt.sh --disable-bot
+xtunnel-menu
 ```
 
-首次启用 Bot 前，请在项目目录创建 `speedtest-bot.env`（可从 `speedtest-bot.env.example` 复制），设置 Token 与 Chat ID，并在 `project.env` 配置实际可用的 HTTP 代理。安装器会检查必需组件，使用 `apk` 或 `opkg` 补装缺失依赖，不自动卸载已安装的系统包。
+也可以从源码目录打开：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh menu.sh
+```
+
+### 非交互式安装（自动化部署）
+
+明确传入参数时不会打开菜单：
+
+```sh
+sh /tmp/xtunnel-openwrt.sh --core            # 仅核心服务
+sh /tmp/xtunnel-openwrt.sh --with-bot        # 核心 + Telegram Bot
+sh /tmp/xtunnel-openwrt.sh --with-speedtest  # 核心 + 测速依赖，不启动 Bot
+sh /tmp/xtunnel-openwrt.sh --enable-timer    # 核心 + 每日 18:00 定时测速
+sh /tmp/xtunnel-openwrt.sh --disable-bot     # 停用已有 Bot，保留核心
+```
+
+非交互式执行时，首次生成示例节点配置后会退出，需补充实际参数再运行。启用 Bot 前还需要正确填写 `speedtest-bot.env` 的 `TG_TOKEN`、`TG_CHATID`。没有 SSH 交互终端时应使用上述显式参数。
 
 ## 软件源更新失败时的行为（OpenWrt 24.x / opkg）
 
@@ -56,17 +70,6 @@ opkg list-installed | grep -E '^python3|^ip-full'
 ```
 
 不同发行版第三方源未必能从通用 OpenWrt 镜像取得，需使用与**当前固件和架构**一致的软件源。安装完成后检查 `/etc/init.d/x-tunnel status`、`/etc/init.d/x-tunnel-speedtest-bot status` 和 `logread`。尚未在每个发行版实机完整验证。
-
-## SSH 菜单
-
-```sh
-cd /overlay/x-tunnel-cf-ip-autotest
-sh menu.sh
-# 安装服务后也可以：
-xtunnel-menu
-```
-
-菜单支持核心安装/修复、更新、编辑节点与项目变量、配置 Telegram Bot、控制服务、日志、定时测速及卸载。菜单新增安装/启用 Bot 和关闭 Bot 两个选项。编辑私有配置前会备份。ShellCrash 配置由用户单独管理。
 
 ## 从旧 main 部署迁移（尤其重要）
 
