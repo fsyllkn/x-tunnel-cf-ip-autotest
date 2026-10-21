@@ -279,6 +279,32 @@ opkg list-installed | grep -E '^python3|^ip-full'
 
 新 `apk` 固件也需要使用与自身发行版和架构匹配的软件包源。安装器不会自动替换源地址。
 
+### Bot 回复“已启动测速”，但未实际测速
+
+精简 OpenWrt 的 Python 3.11 可能没有 `decimal`，旧版 `cfip_speedtest.py` 引用标准库 `statistics` 时会在启动阶段崩溃：
+
+```text
+ModuleNotFoundError: No module named 'decimal'
+```
+
+`openwrt` 分支已将测速所用的均值、中位数和总体标准差计算改为不依赖 `statistics`，**不需要单独安装 `python3-decimal` 来解决这一个错误**。安装器在启用测速/Bot 时会进行模块导入预检，Bot 启动任务后会短暂确认后台进程是否立即退出。
+
+更新代码后（仅运行一键入口、进入菜单不会重启现有核心服务），先在 `x-t` → **8 查看日志** → **4 测速环境自检** 中检查。也可以在 SSH 手动检查，不会启动测速或修改路由：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+python3 -c 'import cfip_speedtest; print("测速模块导入正常")'
+```
+
+若通过，再在菜单选择 **16** 单独重启 Bot，使其加载新版命令处理程序；然后向 Telegram 发送 `/speedtest`。检查实际后台任务日志：
+
+```sh
+tail -n 80 /overlay/x-tunnel-cf-ip-autotest/cfip-data/openwrt-speedtest.log
+logread | grep -E 'Bot received|Speed-test bot|Telegram polling' | tail -n 30
+```
+
+测速还要求 root 权限及 ShellCrash 的策略路由规则（IPv4 `fwmark ... lookup 100`，IPv6 为表 `101`），用于临时强制候选 IP 直连；如果没有相关规则，会拒绝继续测试，而不是悄悄走代理。先通过自检，再按实际日志检查路由问题，**不要删除或任意覆盖系统路由**。
+
 ### Bot 报 `unknown encoding: idna`
 
 OpenWrt 的精简 Python 可能缺少标准库 IDNA 编码器；Bot 使用 HTTPS 代理时可能触发此报错。检查：
