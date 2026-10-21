@@ -197,6 +197,27 @@ sh /tmp/xtunnel-openwrt.sh --enable-timer
 
 注意：低内存设备的主要 RAM 消耗可能来自**每个节点各自运行的 X-Tunnel 内核进程**。不启用 Bot 可减少一个常驻程序，但不意味着 5 个核心进程能压缩成一个。
 
+### 配合 reF1nd sing-box eBPF 的专用 UID
+
+OpenWrt 分支的 `supervisor.py` **默认仅将 X-Tunnel Go 子进程以 UID/GID 29002 运行**；supervisor 仍是 root，负责节点管理、Provider 写入，Telegram Bot 和 CF IP 测速仍使用自己的 root 服务/任务。因此不必在 sing-box 的 eBPF 中排除全部 root (UID 0)。
+
+- 不要求 `adduser`，Linux 数字 UID 可以直接用于进程；安装前确认 29002 未被其他系统用户占用。
+- 每个节点以 `runtime/engines/<hash>-<port>/` 作为独立工作目录，归 UID 29002 所有，便于写入 GeoIP 等本地缓存且避免并发临时文件冲突。
+- 在 `project.env` 中可设置 `X_TUNNEL_PROCESS_UID=29002`（默认为 29002）；更换 UID 后需同步调整 sing-box `inbounds[].local.exclude_uid`，并重启 X-Tunnel 核心。
+- **仅更新源码不会自动替换正在运行的 root 内核进程**。安排维护窗口，使用 `x-t` 菜单 **15** 单独重启核心，Bot 无需重启。切换时 SOCKS5 连接会暂时中断。
+
+在 OpenWrt 检查子进程实际 UID：
+
+```sh
+for pid in $(pidof x-tunnel 2>/dev/null); do
+    awk -v pid="$pid" '/^Uid:/ { print "X-Tunnel PID=" pid, "UID=" $2 }' "/proc/$pid/status"
+done
+```
+
+正常预期每个子进程 UID 都是 `29002`，不是 `0`。如果仍为 root，说明还没有部署新版 supervisor 或没有重启核心。观察 `logread -e x-tunnel` 排查工作目录权限或二进制兼容性。
+
+在 sing-box 的实际配置 `/opt/sing-box/config/config.json` 里设置 `inbounds[].local.exclude_uid: [29002]`，不要为了排除 X-Tunnel 而把 `0` 放进去。配置生效前建议先确认对应 UID 已切换。此豁免只影响 X-Tunnel 内核子进程；**root 权限的 CF IP 测速进程仍可能被 sing-box 的 eBPF 本机接管**，需要另行验证测速直连路由和防回环策略。
+
 ## 6. 更新、重装与迁移
 
 ### 正常更新
