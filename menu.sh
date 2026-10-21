@@ -1,0 +1,212 @@
+#!/bin/sh
+# X-Tunnel SSH management menu; compatible with BusyBox ash.
+set -u
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
+cd "$PROJECT_DIR" || exit 1
+if [ -f /etc/openwrt_release ] || { [ -f /etc/rc.common ] && [ -x /sbin/procd ]; }; then
+  PLATFORM=openwrt
+elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  PLATFORM=systemd
+else
+  PLATFORM=unknown
+fi
+say() { printf '%s\n' "$*"; }
+root_only() { [ "$(id -u)" -eq 0 ] || { say '需要 root 权限。'; return 1; }; }
+ask() { printf '%s [y/N]: ' "$1"; IFS= read -r answer || return 1; case "$answer" in y|Y|yes|YES) return 0;; *) return 1;; esac; }
+wait_menu() { printf '\n按回车返回...'; IFS= read -r unused || true; }
+svc_name() { case "$1" in core) printf x-tunnel;; bot) printf x-tunnel-speedtest-bot;; esac; }
+svc_exists() {
+  name=$(svc_name "$1")
+  if [ "$PLATFORM" = openwrt ]; then [ -f "/etc/init.d/$name" ];
+  elif [ "$PLATFORM" = systemd ]; then [ -f "/etc/systemd/system/$name.service" ];
+  else return 1; fi
+}
+svc_status() {
+  key=$1
+  if ! svc_exists "$key"; then printf '未安装'; return; fi
+  name=$(svc_name "$key")
+  if [ "$PLATFORM" = openwrt ]; then
+    if "/etc/init.d/$name" status >/dev/null 2>&1; then printf '运行中'; else printf '已停止'; fi
+  else
+    if systemctl is-active --quiet "$name.service"; then printf '运行中'; else printf '已停止'; fi
+  fi
+}
+timer_status() {
+  if [ "$PLATFORM" = openwrt ]; then
+    if [ -f /etc/crontabs/root ] && grep -Fq '# x-tunnel-cf-ip-autotest daily speedtest' /etc/crontabs/root; then printf '已开启'; else printf '未开启'; fi
+  elif [ "$PLATFORM" = systemd ]; then
+    if systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then printf '已开启'; else printf '未开启'; fi
+  else printf '未知'; fi
+}
+prepare() {
+  file=$1; example=$2
+  if [ ! -f "$file" ]; then
+    [ -f "$example" ] || { say "缺少模板 $example"; return 1; }
+    (umask 077; cp "$example" "$file") || return 1
+  fi
+  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+}
+check_config() {
+  case "$1" in
+    x-tunnel.yaml) PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' ;;
+    speedtest-bot.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import telegram_speedtest_bot as b; b.read_config()' ;;
+    project.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import project_settings as p; p.load_project_env(); p.get_target_mbps()' >/dev/null ;;
+  esac
+}
+edit_file() {
+  root_only || return
+  file=$1; example=$2
+  prepare "$file" "$example" || return
+  mkdir -p cfip-data/config-backups || return
+  chmod 700 cfip-data cfip-data/config-backups
+  backup="cfip-data/config-backups/$file.$(date +%Y%m%d-%H%M%S).$$"
+  (umask 077; cp "$file" "$backup") || return
+  chmod 600 "$backup"
+  say "配置已备份: $backup"
+  vi "$file" || { say '编辑未完成。'; return; }
+  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+  if check_config "$file"; then
+    say '校验成功。节点配置会自动重载；其他变量修改后请重启相关服务。'
+  else
+    say '配置校验失败，暂不要重启服务。'
+    if ask '恢复编辑前的备份？'; then
+      cp "$backup" "$file"
+      case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+    fi
+  fi
+}
+manage_svc() {
+  root_only || return
+  key=$1; name=$(svc_name "$key")
+  svc_exists "$key" || { say "$name 尚未安装。"; return; }
+  while :; do
+    printf '\n%s: %s\n' "$name" "$(svc_status "$key")"
+    say '1) 启动  2) 停止  3) 重启  4) 开机自启  5) 取消自启  0) 返回'
+    printf '选择: '; IFS= read -r option || return
+    case "$option" in 1) action=start;; 2) action=stop;; 3) action=restart;; 4) action=enable;; 5) action=disable;; 0) return;; *) continue;; esac
+    if [ "$PLATFORM" = openwrt ]; then
+      "/etc/init.d/$name" "$action" || say '服务操作失败。'
+    else
+      systemctl "$action" "$name.service" || say '服务操作失败。'
+    fi
+  done
+}
+install_services() {
+  root_only || return
+  prepare x-tunnel.yaml x-tunnel.example.yaml || return
+  prepare speedtest-bot.env speedtest-bot.env.example || return
+  prepare project.env project.env.example || return
+  say '安装器需要已填写的节点配置、TG_TOKEN 和 TG_CHATID。'
+  if ask '执行安装或修复服务？'; then
+    sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
+  fi
+}
+update_code() {
+  root_only || return
+  ask '从 GitHub 更新代码并重新部署（将重启服务）？' || return
+  if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh"; then
+    say '更新结束，重新载入管理菜单。'
+    exec /bin/sh "$PROJECT_DIR/menu.sh"
+  else
+    say '更新失败；旧配置保留，请查看上方错误。'
+  fi
+}
+show_logs() {
+  say '1) X-Tunnel/Bot 系统日志  2) 测速日志  3) 服务状态  0) 返回'
+  printf '选择: '; IFS= read -r option || return
+  case "$option" in
+    1)
+      if [ "$PLATFORM" = openwrt ]; then logread | tail -n 100
+      else journalctl --no-pager -n 100 -u x-tunnel.service -u x-tunnel-speedtest-bot.service; fi ;;
+    2)
+      if [ "$PLATFORM" = openwrt ]; then
+        if [ -f cfip-data/openwrt-speedtest.log ]; then tail -n 100 cfip-data/openwrt-speedtest.log; else say '暂无测速日志。'; fi
+      else journalctl --no-pager -n 100 -u x-tunnel-speedtest.service; fi ;;
+    3)
+      if [ "$PLATFORM" = openwrt ]; then
+        /etc/init.d/x-tunnel status 2>/dev/null || true
+        /etc/init.d/x-tunnel-speedtest-bot status 2>/dev/null || true
+      else systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true; fi ;;
+  esac
+}
+disable_timer_ow() {
+  [ -f /etc/crontabs/root ] || return 0
+  tmp="/etc/crontabs/root.xtunnel-menu.$$"
+  awk '
+    $0=="# x-tunnel-cf-ip-autotest daily speedtest" { skip=1; next }
+    skip==1 && /openwrt\/run-speedtest\.sh/ { skip=0; next }
+    { skip=0; print }
+  ' /etc/crontabs/root > "$tmp" || { rm -f "$tmp"; return 1; }
+  cat "$tmp" > /etc/crontabs/root
+  rm -f "$tmp"
+  [ -x /etc/init.d/cron ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
+}
+manage_timer() {
+  root_only || return
+  say "当前: $(timer_status)"
+  say '1) 开启每天 18:00 测速  2) 关闭自动测速  0) 返回'
+  printf '选择: '; IFS= read -r option || return
+  case "$option" in
+    1)
+      if [ "$PLATFORM" = openwrt ]; then sh "$PROJECT_DIR/install.sh" --enable-timer || say '启用失败。'
+      else systemctl enable --now x-tunnel-speedtest.timer || say '启用失败。'; fi ;;
+    2)
+      if [ "$PLATFORM" = openwrt ]; then disable_timer_ow && say '已关闭。'
+      else systemctl disable --now x-tunnel-speedtest.timer || say '关闭失败。'; fi ;;
+  esac
+}
+run_test() {
+  root_only || return
+  say '注意：测速可能更新节点 CF IP，也会临时变更候选 IP 的直连路由。'
+  ask '现在执行完整测速？' || return
+  if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
+  else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
+}
+show_menu() {
+  say '=========================================================='
+  say '                 X-Tunnel 管理菜单'
+  say '=========================================================='
+  printf '平台: %s  项目路径: %s\n' "$PLATFORM" "$PROJECT_DIR"
+  printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
+  say '----------------------------------------------------------'
+  say ' 1) 安装/修复服务           2) GitHub 更新项目'
+  say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
+  say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
+  say ' 7) Telegram Bot 服务管理  8) 查看日志'
+  say ' 9) 定时测速管理          10) 立即运行完整测速'
+  say '11) 配置检查              12) 卸载服务（保留配置）'
+  say ' 0) 退出'
+}
+while :; do
+  show_menu
+  printf '\n请输入选项: '
+  IFS= read -r option || break
+  case "$option" in
+    1) install_services;;
+    2) update_code;;
+    3) edit_file speedtest-bot.env speedtest-bot.env.example;;
+    4) edit_file project.env project.env.example;;
+    5) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
+    6) manage_svc core;;
+    7) manage_svc bot;;
+    8) show_logs;;
+    9) manage_timer;;
+    10) run_test;;
+    11)
+      for file in x-tunnel.yaml speedtest-bot.env project.env; do
+        if [ -f "$file" ]; then
+          if check_config "$file"; then say "$file: OK"; else say "$file: INVALID"; fi
+        else say "$file: 未配置"; fi
+      done;;
+    12)
+      root_only || continue
+      if ask '卸载服务和定时任务（保留配置与内核）？'; then
+        sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
+      fi;;
+    0|q|Q) break;;
+    *) say '无效选择。';;
+  esac
+  wait_menu
+  printf '\033[2J\033[H'
+done
+say '已退出 X-Tunnel 管理菜单。'
