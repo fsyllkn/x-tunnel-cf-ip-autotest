@@ -1,4 +1,6 @@
-# X-Tunnel 节点、测速与部署手册
+# X-Tunnel 节点、测速与部署手册（Debian / Ubuntu 主线）
+
+**分支定位：** `main` 作为 Debian/Ubuntu/systemd 的完整功能主线，继续保留既有兼容逻辑以避免现有部署中断；低资源 OpenWrt/iStoreOS 推荐使用专用 [openwrt 轻量分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt)，该分支默认只安装核心服务，Bot 和自动测速按需启用。不同分支的一键安装 URL 不可混用。
 
 本项目管理 x-tunnel 内核进程、生成 sing-box 本地节点 Provider、Cloudflare IP 测速与 Telegram 通知。支持 systemd Linux 与 OpenWrt procd；ShellCrash 与 X-Tunnel 服务互相独立，ShellCrash 只需由用户自行配置为读取生成的 Provider。项目目录可整体迁移；安装脚本按实际目录生成服务路径。
 
