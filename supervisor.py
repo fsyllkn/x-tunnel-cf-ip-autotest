@@ -363,6 +363,19 @@ def configured_process_uid():
     uid = int(raw)
     if not 1000 <= uid <= 60000:
         raise ValueError("X_TUNNEL_PROCESS_UID must be in 1000..60000, not root")
+    # A numeric UID requires no passwd entry, but must not impersonate an
+    # unrelated system user. BusyBox OpenWrt does not always ship Python pwd.
+    try:
+        for line in Path("/etc/passwd").read_text(encoding="utf-8").splitlines():
+            fields = line.split(":")
+            if len(fields) >= 4 and fields[2].isdecimal() and int(fields[2]) == uid:
+                if fields[0] not in ("x-tunnel", "xtunnel"):
+                    raise ValueError(
+                        "X_TUNNEL_PROCESS_UID %d belongs to existing account %s"
+                        % (uid, fields[0])
+                    )
+    except FileNotFoundError:
+        pass
     return uid
 
 
