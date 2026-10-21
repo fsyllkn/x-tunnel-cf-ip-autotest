@@ -159,7 +159,8 @@ update_code() {
   fi
 }
 show_logs() {
-  say '1) X-Tunnel/Bot 系统日志  2) 测速日志  3) 服务状态  0) 返回'
+  say '1) X-Tunnel/Bot 系统日志  2) 测速日志  3) 服务状态'
+  say '4) 测速环境自检（不启动任务）  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
@@ -174,6 +175,24 @@ show_logs() {
         /etc/init.d/x-tunnel status 2>/dev/null || true
         /etc/init.d/x-tunnel-speedtest-bot status 2>/dev/null || true
       else systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true; fi ;;
+    4)
+      say '检查测速 Python 模块；不会修改节点配置、网络路由或启动测速。'
+      if ! command -v python3 >/dev/null 2>&1; then
+        say 'ERROR: python3 未安装。'
+      elif (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest; print("CF测速模块导入正常")'); then
+        say '测速 Python 导入检查通过。'
+      else
+        say '测速 Python 导入检查失败。请查看上方 traceback。'
+      fi
+      if command -v ip >/dev/null 2>&1; then
+        if ip -4 rule show 2>/dev/null | grep -Eq 'fwmark .*lookup 100([[:space:]]|$)'; then
+          say '检测到 IPv4 ShellCrash 策略路由表 100 的 fwmark 规则。'
+        else
+          say '提示：未找到 ShellCrash 的 IPv4 fwmark lookup 100，完整测速的强制直连路由可能无法启动。'
+        fi
+      else
+        say '提示：缺少 ip 命令，测速需要 ip-full。'
+      fi ;;
   esac
 }
 disable_timer_ow() {
