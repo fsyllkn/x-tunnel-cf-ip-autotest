@@ -196,24 +196,69 @@ update_code() {
     say '更新失败；旧配置保留，请查看上方错误。'
   fi
 }
+# procd labels inherited Go stdout/stderr as python3[SUPERVISOR_PID].
+# Resolve the actual script PID instead of printing the full system log:
+# that would mix unrelated sing-box, dnsmasq and other services.
+find_service_pids() {
+  target="$PROJECT_DIR/$1"
+  for entry in /proc/[0-9]*; do
+    [ -r "$entry/cmdline" ] || continue
+    if tr '\\000' '\\n' < "$entry/cmdline" 2>/dev/null | grep -Fxq "$target"; then
+      printf '%s\\n' "${entry##*/}"
+    fi
+  done
+}
+show_service_log_openwrt() {
+  script="$1"
+  label="$2"
+  pids="$(find_service_pids "$script")"
+  if [ -z "$pids" ]; then
+    say "$label 当前未运行，无法确定现有 procd 日志所属 PID（不会混合其他服务日志）。"
+    return
+  fi
+  found=0
+  for pid in $pids; do
+    # The exact syslog tag identifies all Go child messages inherited via
+    # supervisor stdout, without matching unrelated python3 instances.
+    logread 2>/dev/null | grep -F "python3[$pid]:" || true
+  done | tail -n 100
+}
 show_logs() {
-  say '1) X-Tunnel/Bot 系统日志  2) 测速日志  3) 服务状态'
-  say '4) 测速环境自检（不启动任务）  0) 返回'
+  say '1) X-Tunnel 连接日志（仅核心）  2) CF IP 测速日志'
+  say '3) Telegram Bot 日志        4) 服务状态'
+  say '5) 测速环境自检（不启动任务）  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
-      if [ "$PLATFORM" = openwrt ]; then logread | tail -n 100
-      else journalctl --no-pager -n 100 -u x-tunnel.service -u x-tunnel-speedtest-bot.service; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        show_service_log_openwrt supervisor.py 'X-Tunnel 核心'
+      else
+        journalctl --no-pager -n 100 -u x-tunnel.service
+      fi ;;
     2)
       if [ "$PLATFORM" = openwrt ]; then
-        if [ -f cfip-data/openwrt-speedtest.log ]; then tail -n 100 cfip-data/openwrt-speedtest.log; else say '暂无测速日志。'; fi
-      else journalctl --no-pager -n 100 -u x-tunnel-speedtest.service; fi ;;
+        if [ -f cfip-data/openwrt-speedtest.log ]; then
+          tail -n 100 cfip-data/openwrt-speedtest.log
+        else
+          say '暂无 CF IP 测速日志。'
+        fi
+      else
+        journalctl --no-pager -n 100 -u x-tunnel-speedtest.service
+      fi ;;
     3)
+      if [ "$PLATFORM" = openwrt ]; then
+        show_service_log_openwrt telegram_speedtest_bot.py 'Telegram Bot'
+      else
+        journalctl --no-pager -n 100 -u x-tunnel-speedtest-bot.service
+      fi ;;
+    4)
       if [ "$PLATFORM" = openwrt ]; then
         /etc/init.d/x-tunnel status 2>/dev/null || true
         /etc/init.d/x-tunnel-speedtest-bot status 2>/dev/null || true
-      else systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true; fi ;;
-    4)
+      else
+        systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true
+      fi ;;
+    5)
       say '检查测速 Python 模块；不会修改节点配置、网络路由或启动测速。'
       if ! command -v python3 >/dev/null 2>&1; then
         say 'ERROR: python3 未安装。'
@@ -238,6 +283,7 @@ else:
       else
         say '提示：缺少 ip 命令，测速需要 ip-full。'
       fi ;;
+    0) return;;
   esac
 }
 disable_timer_ow() {
