@@ -62,6 +62,7 @@ sh menu.sh
 13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存
 15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot
 17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点
+19) 修复 Go 内核与 SOCKS5 监听
  0) 退出
 ```
 
@@ -70,6 +71,7 @@ sh menu.sh
 - **16**：仅重启 Telegram Bot，不重启 X-Tunnel 节点。
 - **17**：只停止 X-Tunnel 核心和全部 SOCKS5 节点，Bot/定时测速不变。
 - **18**：只刷新 Clash/Mihomo YAML、V2Ray/Xray 出站片段、SOCKS5 URI 文件，不重启节点。
+- **19**：下载修复版 Linux Go 内核，先做本地 SOCKS5 握手验证，备份旧内核后替换并重新启动核心；Bot 不受影响。
 - **2 GitHub 更新**：下载最新代码并调用核心安装程序，**会重启核心服务**；不会自动替你重新配置或重启 Bot。
 - **14 关闭 Bot**：停止 Bot 并取消其开机自启，不重启 X-Tunnel 核心服务。
 
@@ -282,6 +284,29 @@ logread | tail -n 80
 
 `x-t` → **8 查看日志** 改为独立四个入口：**1 X-Tunnel 连接日志**、**2 CF IP 测速日志**、**3 Telegram Bot 日志**、**4 服务状态**（5 为测速环境自检）。核心和 Bot 的 OpenWrt 日志按当前服务脚本对应的 Python PID 精确筛选 syslog 标签 `python3[PID]:`，不会再显示 sing-box 或 dnsmasq 的日志；CF 测速只显示 `cfip-data/openwrt-speedtest.log`。因为 procd 默认按 `python3[PID]` 标记继承的 Go 内核 stdout，这个筛选也能显示 X-Tunnel 的 smux/客户端连接行。**如果核心已停止，无法通过当前 PID 确定旧 syslog 的归属，菜单会提示而不会显示混杂的系统日志**；不会因为查看日志而启动服务或重新测速。
 
+
+### 缺失 SOCKS5 监听器的内核修复
+
+受影响旧内核的表现：X-Tunnel supervisor 和 Go 子进程显示运行中、smux 通道就绪，但 `netstat -lnt | grep 32322` 没有监听，`curl --socks5-hostname 127.0.0.1:32322 ...` 立即返回 code 7。根因是客户端初始化漏调用 `startListeners()`。修复代码位于 [fsyllkn/x-tunnel 的 openwrt 分支](https://github.com/fsyllkn/x-tunnel/tree/openwrt)；不会修改此 Go 仓库的 `main` 分支。
+
+修复流程：
+
+1. 在 `x-t` 菜单选 **2）更新 OpenWrt 管理脚本**，让新菜单可用（此操作本身会重启核心，但不会替换已有旧二进制）。
+2. 在 `x-t` 菜单选 **19）修复 Go 内核与 SOCKS5 监听**，确认后从 `fsyllkn/x-tunnel` 的固定版本 `openwrt-socks5-v1` 下载对应架构的二进制。**如果该 GitHub Release 尚未构建成功，请不要以为本地已经完成修复；下载失败时原二进制保持不变。**
+3. 安装器先验证 ELF 架构和 CLI，再在本机临时端口做真实 SOCKS5 握手；合格后保留 `/usr/bin/x-tunnel.backup-<时间>-<PID>` 并原子替换，重启核心后逐个验证节点是否监听。
+4. 成功时输出 `PASS: N/N SOCKS5 endpoints accept handshakes`；确认节点端口之后，再用 `curl --socks5-hostname` 检查远端出口 IP。
+
+也可以直接执行：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+sh install.sh --repair-kernel
+python3 openwrt/healthcheck.py
+```
+
+若设备网络无法访问 GitHub，但已经安全地取得修复后的 `x-tunnel-linux-amd64`（或 arm64）文件，可用 `X_TUNNEL_KERNEL_FILE=/tmp/x-tunnel-linux-amd64 sh install.sh --repair-kernel`。该文件仍会经过 ELF 和 SOCKS5 握手预检。**普通菜单 1 / 2 更新不会静默覆盖已有内核**，需要明确选择 19 进行替换。
+
+纯 SOCKS5 客户端模式只负责本地监听和 WSS/smux 转发；无须 GeoIP、GeoSite 的内部直连分流，也不在 Linux 上创建 TUN 设备、劫持 DNS 或修改系统路由。注意该项目导出 SOCKS5 Provider 不等于 Shadowsocks。
 
 ### 多格式 SOCKS5 Provider 导出（纯节点，无网络接管）
 
