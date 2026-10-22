@@ -2,7 +2,7 @@
 
 > **OpenWrt 轻量分支：** [openwrt](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt)（BusyBox / procd，兼容 `opkg` 和 `apk`）。Debian、Ubuntu 等 systemd 系统请使用 [main 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/main)。两条分支的一键安装链接不要混用。
 
-X-Tunnel 在 OpenWrt 上运行独立的 SOCKS5 节点，并生成可供 sing-box / ShellCrash 使用的本地 Provider JSON。**默认只安装核心节点管理服务**；Telegram Bot、CF IP 测速及每日计划任务按需启用。
+X-Tunnel 在 OpenWrt 上运行独立的 SOCKS5 节点，同时导出 sing-box JSON、Mihomo/Clash YAML、Xray/V2Ray SOCKS 出站和 SOCKS5 分享链接。**默认只安装核心节点管理服务**；Telegram Bot、CF IP 测速及每日计划任务按需启用。
 
 ## 1. 一键安装（推荐）
 
@@ -276,6 +276,54 @@ logread | tail -n 80
 ```
 
 只安装核心时，Bot 服务不存在属于正常情况。procd 显示 `running` 说明服务进程存在，还需结合 SOCKS5 端口及连通性检测。OpenWrt 的 `logread` 将某些子进程输出归入 `daemon.err`，但含 `INFO`、ECH 查询或通道就绪的行不必然是故障。
+
+### 多格式 SOCKS5 Provider 导出（纯节点，无网络接管）
+
+核心启动、节点配置变更时，`sync_singbox.py` 会自动从同一批已分配的 SOCKS5 端口生成以下文件（默认位于 `/overlay/x-tunnel-cf-ip-autotest/runtime/`）：
+
+| 文件 | 格式 | 用途 |
+| --- | --- | --- |
+| `x-tunnel-provider.json` | sing-box `{"outbounds":[{"type":"socks", ...}]}` | 保留原生本地 Provider，向后兼容 |
+| `x-tunnel-clash.yaml` | Mihomo/Clash `proxies:`，`type: socks5` | 作为 **proxy-provider** 文件导入 Clash/Mihomo |
+| `x-tunnel-v2ray.json` | Xray/V2Ray `outbounds`，`protocol: socks` | 合并到现有 Xray/V2Ray 配置中的出站片段；不是完整可运行配置 |
+| `x-tunnel-socks5.txt` | 每行 `socks5://host:port#name` | 支持此 URI 的客户端可尝试导入；兼容性视客户端版本而定 |
+
+示例 Clash/Mihomo YAML：
+
+```yaml
+proxies:
+  - name: "🇭🇰HKG_x-tunnel"
+    type: socks5
+    server: 127.0.0.1
+    port: 32322
+```
+
+示例 Xray/V2Ray 出站片段：
+
+```json
+{
+  "outbounds": [{
+    "tag": "🇭🇰HKG_x-tunnel",
+    "protocol": "socks",
+    "settings": {"servers": [{"address": "127.0.0.1", "port": 32322}]}
+  }]
+}
+```
+
+**`ss://` 是 Shadowsocks 协议链接，不是 SOCKS5。** X-Tunnel 当前仅监听 SOCKS5，不能把端口伪装成 `ss://` 供 V2Ray 工具导入。已导出 `socks5://` 链接；不增加额外 Shadowsocks 桥接进程、不对 OpenWrt 做 TUN、TProxy、DNS 或分流规则修改。
+
+`127.0.0.1` 只在 **运行 X-Tunnel 的同一台机器** 有效。Windows、手机或局域网其他设备若要连接，须显式配置安全的监听地址及防火墙访问控制，并将其导入配置中的 host 调整为可达的 LAN IP；默认不向 LAN 暴露无认证 SOCKS5，切勿暴露公网。
+
+手动只刷新伴随导出文件（**不会重启节点，不会重分配端口，也不会修改原始 Provider**）：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+python3 sync_singbox.py --export-only
+```
+
+也可以在 `x-t` 主菜单选择 **18) 导出 Clash/V2Ray/SOCKS5 节点**。如果自定义了 `X_TUNNEL_PROVIDER_PATH`，伴随文件会保存在该 JSON 的相同目录下。使用测试命令 `python3 -m unittest discover -s tests -p test_multi_export.py` 可检查格式有效性（需要 PyYAML；测试不会启动 X-Tunnel）。
+
+**停止服务快捷项：** 主菜单 **17) 停止 X-Tunnel 核心** 会先询问确认，随后停止核心 supervisor 和全部 SOCKS5 子进程；不会停止 Telegram Bot、关闭定时测速、删除节点或修改 DNS/路由。需要重新启动可进入主菜单 **6) X-Tunnel 服务管理** → **1) 启动**。
 
 ### Provider 文件在哪里
 
