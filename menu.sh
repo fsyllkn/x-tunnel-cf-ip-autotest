@@ -102,6 +102,44 @@ manage_svc() {
     fi
   done
 }
+# Stop only X-Tunnel's procd core service and SOCKS5 children, leaving Bot
+# and scheduled CF IP speedtests untouched. This does not alter routes or DNS.
+stop_core_only() {
+  root_only || return
+  if ! svc_exists core; then
+    say 'X-Tunnel 核心服务尚未安装。'
+    return
+  fi
+  if [ "$(svc_status core)" = '已停止' ]; then
+    say 'X-Tunnel 核心服务已经停止。'
+    return
+  fi
+  ask '停止 X-Tunnel 核心和全部 SOCKS5 节点？现有连接会断开。' || return
+  if [ "$PLATFORM" = openwrt ]; then
+    /etc/init.d/x-tunnel stop || { say '停止核心服务失败，请检查日志。'; return 1; }
+  elif [ "$PLATFORM" = systemd ]; then
+    systemctl stop x-tunnel.service || { say '停止核心服务失败，请检查日志。'; return 1; }
+  else
+    say '不支持的服务管理系统。'
+    return 1
+  fi
+  say "X-Tunnel 核心状态: $(svc_status core)"
+}
+export_socks_providers() {
+  root_only || return
+  if ! (cd "$PROJECT_DIR" && python3 sync_singbox.py --export-only); then
+    say '导出失败。请先运行 X-Tunnel 核心生成 SOCKS5 Provider。'
+    return 1
+  fi
+  say '导出结果（仅 SOCKS5，不生成伪造的 ss:// 链接）：'
+  # The canonical provider may be redirected through project.env.
+  python3 -c '
+from sync_singbox import provider_path, CLASH_FILE, V2RAY_FILE, SOCKS_LINKS_FILE
+p = provider_path()
+for path in (p, p.parent / CLASH_FILE, p.parent / V2RAY_FILE, p.parent / SOCKS_LINKS_FILE):
+    print(path)
+'
+}
 # Main-menu restart shortcuts. A Bot restart does not touch X-Tunnel nodes.
 restart_service() {
   root_only || return
@@ -254,6 +292,7 @@ show_menu() {
   say '11) 配置检查              12) 卸载服务（保留配置）'
   say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
   say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
+  say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
   say ' 0) 退出'
 }
 while :; do
@@ -313,6 +352,8 @@ while :; do
       fi;;
     15) restart_service core;;
     16) restart_service bot;;
+    17) stop_core_only;;
+    18) export_socks_providers;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
