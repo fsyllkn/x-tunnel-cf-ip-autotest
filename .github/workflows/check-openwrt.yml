@@ -33,3 +33,15 @@ jobs:
             echo 'BUG: preflight accepted a candidate without a SOCKS5 listener' >&2
             exit 1
           fi
+      - name: Positive preflight against byte-identical stable Go core
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output /tmp/x-tunnel-linux-amd64 \
+            https://github.com/fsyllkn/x-tunnel/releases/download/openwrt-stable-go126-v1/x-tunnel-linux-amd64
+          printf '%s  %s\n' \
+            'ae3a79a4d2a6a8d7e1377afb2e022c5ed75b0157a694fb6aead9d86ab873ccc2' \
+            '/tmp/x-tunnel-linux-amd64' | sha256sum --check
+          chmod 755 /tmp/x-tunnel-linux-amd64
+          python3 openwrt/kernel_smoke.py /tmp/x-tunnel-linux-amd64
