@@ -187,14 +187,14 @@ restart_service() {
     fi
   fi
 }
-# Explicitly replace old Go kernel with the independently tested OpenWrt build.
+# Install the byte-identical Go 1.26 stable core recovered from the original single-file source.
 # The installer checks ELF, runs a local SOCKS5 handshake, and backs up the old binary.
 repair_kernel() {
   root_only || return
   [ "$PLATFORM" = openwrt ] || { say '仅支持 OpenWrt 平台。'; return 1; }
-  ask '安装修复版 X-Tunnel 内核？旧二进制会备份，全部 SOCKS5 连接将短暂中断。' || return
+  ask '安装已验证的 Go 1.26 稳定内核？将备份旧二进制，并短暂重启全部 SOCKS5 节点。' || return
   if sh "$PROJECT_DIR/install.sh" --repair-kernel; then
-    say '已安装修复版内核，正在检查所有 SOCKS5 端口...'
+    say '已安装 Go 1.26 稳定内核，正在检查所有 SOCKS5 端口...'
     if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
       say 'ERROR: 核心可能仍在运行，但节点 SOCKS5 监听未全部就绪。请检查 X-Tunnel 连接日志。'
       return 1
@@ -370,7 +370,7 @@ show_menu() {
   say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
   say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
   say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
-  say '19) 修复 Go 内核与 SOCKS5 监听'
+  say '19) 安装已验证 Go 1.26 稳定内核'
   say ' 0) 退出'
 }
 while :; do
