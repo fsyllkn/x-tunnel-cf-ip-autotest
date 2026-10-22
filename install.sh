@@ -9,7 +9,9 @@ DISABLE_BOT=0
 OPENWRT=0
 PLATFORM=openwrt
 KERNEL_PATH=/usr/bin/x-tunnel
-KERNEL_REPOSITORY=caichengle666/x-tunnel
+KERNEL_REPOSITORY=fsyllkn/x-tunnel
+KERNEL_DEFAULT_VERSION=openwrt-socks5-v1
+REPAIR_KERNEL=0
 
 if [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ] && [ -x /sbin/procd ]; then
     OPENWRT=1
@@ -24,7 +26,8 @@ for argument in "$@"; do
         --with-bot) WITH_BOT=1; WITH_SPEEDTEST=1 ;;
         --with-speedtest) WITH_SPEEDTEST=1 ;;
         --disable-bot) DISABLE_BOT=1 ;;
-        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer] [--disable-bot]"; exit 0 ;;
+        --repair-kernel) REPAIR_KERNEL=1 ;;
+        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer] [--disable-bot] [--repair-kernel]"; exit 0 ;;
         *) echo "Invalid option. Use --help." >&2; exit 2 ;;
     esac
 done
@@ -157,51 +160,63 @@ if machine != expected_machine:
 PY
 }
 
+# Normal updates preserve a user's binary; replacing a running Go executable
+# is explicit (--repair-kernel), verified before installing and backed up.
+KERNEL_ALREADY_INSTALLED=0
 if [ -e "$KERNEL_PATH" ] || [ -L "$KERNEL_PATH" ]; then
-    [ -f "$KERNEL_PATH" ] || {
-        echo "$KERNEL_PATH exists but is not a regular file; move it aside before installing." >&2
-        exit 1
+    KERNEL_ALREADY_INSTALLED=1
+    [ -f "$KERNEL_PATH" ] && [ ! -L "$KERNEL_PATH" ] || {
+        echo "Existing $KERNEL_PATH is not a regular file." >&2; exit 1;
     }
-    validate_kernel "$KERNEL_PATH" || {
-        echo "Existing $KERNEL_PATH is invalid or for a different architecture; it was not replaced." >&2
-        exit 1
-    }
+    validate_kernel "$KERNEL_PATH" || exit 1
+fi
+if [ "$KERNEL_ALREADY_INSTALLED" -eq 1 ] && [ "$REPAIR_KERNEL" -eq 0 ]; then
     chmod 0755 "$KERNEL_PATH"
-    echo "Using existing x-tunnel kernel ($machine); permissions set to 0755."
+    echo "Using existing x-tunnel kernel ($machine); no binary change."
+    echo "[INFO] To repair missing SOCKS5 listeners select x-t menu 19."
 else
-    release=${X_TUNNEL_KERNEL_VERSION:-latest}
-    asset="x-tunnel-linux-$kernel_arch"
+    release=${X_TUNNEL_KERNEL_VERSION:-$KERNEL_DEFAULT_VERSION}
     case "$release" in
-        latest) download_url="https://github.com/$KERNEL_REPOSITORY/releases/latest/download/$asset" ;;
-        *[!A-Za-z0-9._-]*|"")
-            echo "Invalid X_TUNNEL_KERNEL_VERSION: $release" >&2
-            exit 1
-            ;;
-        *) download_url="https://github.com/$KERNEL_REPOSITORY/releases/download/$release/$asset" ;;
+        *[!A-Za-z0-9._-]*|"") echo "Invalid kernel version: $release" >&2; exit 1 ;;
     esac
-    download_dir=$(mktemp -d "${TMPDIR:-/tmp}/x-tunnel-kernel.XXXXXX")
+    asset="x-tunnel-linux-$kernel_arch"
+    download_dir=$(mktemp -d "/tmp/x-tunnel-kernel.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT HUP INT TERM
     downloaded_kernel="$download_dir/$asset"
-    if command -v curl >/dev/null 2>&1; then
-        curl --fail --location --retry 3 --connect-timeout 20 "$download_url" --output "$downloaded_kernel"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -T 20 -O "$downloaded_kernel" "$download_url"
+    if [ -n "${X_TUNNEL_KERNEL_FILE:-}" ]; then
+        echo "[INFO] Loading candidate from local file: $X_TUNNEL_KERNEL_FILE"
+        cp "$X_TUNNEL_KERNEL_FILE" "$downloaded_kernel"
     else
-        echo "Install curl or wget to download the x-tunnel kernel." >&2
-        exit 1
+        download_url="https://github.com/$KERNEL_REPOSITORY/releases/download/$release/$asset"
+        echo "[INFO] Downloading OpenWrt fixed kernel ($release)"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL --retry 3 --connect-timeout 20 -o "$downloaded_kernel" "$download_url"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -T 20 -O "$downloaded_kernel" "$download_url"
+        else
+            echo "curl or wget required for kernel download." >&2; exit 1
+        fi
     fi
-    validate_kernel "$downloaded_kernel"
+    validate_kernel "$downloaded_kernel" || exit 1
     chmod 0755 "$downloaded_kernel"
     "$downloaded_kernel" -h >/dev/null 2>&1 || {
-        echo "Downloaded x-tunnel kernel failed its startup check; it was not installed." >&2
-        exit 1
+        echo "[ERROR] Candidate kernel CLI test failed; existing binary unchanged." >&2; exit 1;
     }
+    python3 "$PROJECT_DIR/openwrt/kernel_smoke.py" "$downloaded_kernel" || {
+        echo "[ERROR] Candidate SOCKS5 handshake failed; existing binary unchanged." >&2; exit 1;
+    }
+    if [ "$KERNEL_ALREADY_INSTALLED" -eq 1 ]; then
+        backup="$KERNEL_PATH.backup-$(date +%Y%m%d-%H%M%S)-$$"
+        cp -p "$KERNEL_PATH" "$backup"
+        echo "[INFO] Kernel backup: $backup"
+    fi
     copy_with_mode "$downloaded_kernel" "$KERNEL_PATH.new" 0755
     mv -f "$KERNEL_PATH.new" "$KERNEL_PATH"
-    echo "Installed x-tunnel kernel for $machine from $KERNEL_REPOSITORY ($release)."
+    echo "[OK] Installed preflight-verified X-Tunnel kernel ($release)."
     rm -rf "$download_dir"
     trap - EXIT HUP INT TERM
 fi
+
 [ -f "$PROJECT_DIR/x-tunnel.yaml" ] || {
     echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
