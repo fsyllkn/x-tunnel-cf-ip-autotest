@@ -61,12 +61,15 @@ sh menu.sh
 11) 配置检查              12) 卸载服务（保留配置）
 13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存
 15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot
+17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点
  0) 退出
 ```
 
 - **6 / 7**：启动、停止、重启及开机自启管理。
 - **15**：仅重启 X-Tunnel 核心与其节点，现有连接会短暂中断。
 - **16**：仅重启 Telegram Bot，不重启 X-Tunnel 节点。
+- **17**：只停止 X-Tunnel 核心和全部 SOCKS5 节点，Bot/定时测速不变。
+- **18**：只刷新 Clash/Mihomo YAML、V2Ray/Xray 出站片段、SOCKS5 URI 文件，不重启节点。
 - **2 GitHub 更新**：下载最新代码并调用核心安装程序，**会重启核心服务**；不会自动替你重新配置或重启 Bot。
 - **14 关闭 Bot**：停止 Bot 并取消其开机自启，不重启 X-Tunnel 核心服务。
 
