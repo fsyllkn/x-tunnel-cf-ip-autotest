@@ -277,6 +277,9 @@ logread | tail -n 80
 
 只安装核心时，Bot 服务不存在属于正常情况。procd 显示 `running` 说明服务进程存在，还需结合 SOCKS5 端口及连通性检测。OpenWrt 的 `logread` 将某些子进程输出归入 `daemon.err`，但含 `INFO`、ECH 查询或通道就绪的行不必然是故障。
 
+`x-t` → **8 查看日志** 改为独立四个入口：**1 X-Tunnel 连接日志**、**2 CF IP 测速日志**、**3 Telegram Bot 日志**、**4 服务状态**（5 为测速环境自检）。核心和 Bot 的 OpenWrt 日志按当前服务脚本对应的 Python PID 精确筛选 syslog 标签 `python3[PID]:`，不会再显示 sing-box 或 dnsmasq 的日志；CF 测速只显示 `cfip-data/openwrt-speedtest.log`。因为 procd 默认按 `python3[PID]` 标记继承的 Go 内核 stdout，这个筛选也能显示 X-Tunnel 的 smux/客户端连接行。**如果核心已停止，无法通过当前 PID 确定旧 syslog 的归属，菜单会提示而不会显示混杂的系统日志**；不会因为查看日志而启动服务或重新测速。
+
+
 ### 多格式 SOCKS5 Provider 导出（纯节点，无网络接管）
 
 核心启动、节点配置变更时，`sync_singbox.py` 会自动从同一批已分配的 SOCKS5 端口生成以下文件（默认位于 `/overlay/x-tunnel-cf-ip-autotest/runtime/`）：
