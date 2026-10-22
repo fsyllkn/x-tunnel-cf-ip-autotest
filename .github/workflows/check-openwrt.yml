@@ -1,0 +1,35 @@
+name: Validate OpenWrt manager
+
+on:
+  push:
+    branches: [openwrt]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check BusyBox-compatible shell syntax
+        run: |
+          sh -n install.sh
+          sh -n menu.sh
+          sh -n quick-install.sh
+          sh -n openwrt/run-speedtest.sh
+      - name: Check Python modules and export regression tests
+        run: |
+          python3 -m pip install PyYAML
+          python3 -m compileall -q supervisor.py sync_singbox.py openwrt tests
+          python3 -m unittest discover -s tests -p 'test_multi_export.py' -v
+      - name: Ensure a non-listening candidate fails preflight
+        run: |
+          if python3 openwrt/kernel_smoke.py /bin/true; then
+            echo 'BUG: preflight accepted a candidate without a SOCKS5 listener' >&2
+            exit 1
+          fi
