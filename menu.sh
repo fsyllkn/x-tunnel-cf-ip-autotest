@@ -203,8 +203,8 @@ find_service_pids() {
   target="$PROJECT_DIR/$1"
   for entry in /proc/[0-9]*; do
     [ -r "$entry/cmdline" ] || continue
-    if tr '\\000' '\\n' < "$entry/cmdline" 2>/dev/null | grep -Fxq "$target"; then
-      printf '%s\\n' "${entry##*/}"
+    if tr '\000' '\n' < "$entry/cmdline" 2>/dev/null | grep -Fxq "$target"; then
+      printf '%s\n' "${entry##*/}"
     fi
   done
 }
@@ -216,7 +216,6 @@ show_service_log_openwrt() {
     say "$label 当前未运行，无法确定现有 procd 日志所属 PID（不会混合其他服务日志）。"
     return
   fi
-  found=0
   for pid in $pids; do
     # The exact syslog tag identifies all Go child messages inherited via
     # supervisor stdout, without matching unrelated python3 instances.
