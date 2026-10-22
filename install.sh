@@ -10,7 +10,7 @@ OPENWRT=0
 PLATFORM=openwrt
 KERNEL_PATH=/usr/bin/x-tunnel
 KERNEL_REPOSITORY=fsyllkn/x-tunnel
-KERNEL_DEFAULT_VERSION=openwrt-socks5-v1
+KERNEL_DEFAULT_VERSION=openwrt-stable-go126-v1
 REPAIR_KERNEL=0
 
 if [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ] && [ -x /sbin/procd ]; then
@@ -198,6 +198,23 @@ else
         fi
     fi
     validate_kernel "$downloaded_kernel" || exit 1
+    # Pin the known-working AMD64 release to the exact user-verified ELF.
+    # Explicit custom files remain allowed for controlled local testing,
+    # but must still pass ELF checks and the SOCKS5 handshake smoke test.
+    if [ -z "${X_TUNNEL_KERNEL_FILE:-}" ] &&
+       [ "$release" = "openwrt-stable-go126-v1" ] &&
+       [ "$kernel_arch" = "amd64" ]; then
+        python3 - "$downloaded_kernel" <<'PY'
+import hashlib
+import pathlib
+import sys
+want = "ae3a79a4d2a6a8d7e1377afb2e022c5ed75b0157a694fb6aead9d86ab873ccc2"
+digest = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+if digest != want:
+    raise SystemExit("[ERROR] Stable AMD64 ELF hash mismatch; refusing to replace existing kernel.")
+print("[OK] Stable AMD64 core SHA256 matches original working binary.")
+PY
+    fi
     chmod 0755 "$downloaded_kernel"
     "$downloaded_kernel" -h >/dev/null 2>&1 || {
         echo "[ERROR] Candidate kernel CLI test failed; existing binary unchanged." >&2; exit 1;
