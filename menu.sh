@@ -156,7 +156,17 @@ restart_service() {
   fi
   say "正在重启 $name ..."
   if [ "$PLATFORM" = openwrt ]; then
-    if ! "/etc/init.d/$name" restart; then
+    if [ "$key" = core ]; then
+      # Some fw3/procd builds report "Command failed: Not found" on
+      # restart despite successfully spawning the supervisor. Use an
+      # explicit stop + start instead, then check real SOCKS5 listeners.
+      "/etc/init.d/$name" stop >/dev/null 2>&1 || true
+      sleep 1
+      if ! "/etc/init.d/$name" start; then
+        say '核心服务启动失败，请检查 X-Tunnel 连接日志。'
+        return 1
+      fi
+    elif ! "/etc/init.d/$name" restart; then
       say '重启命令失败，请进入服务管理菜单查看状态并尝试停止/启动。'
       return 1
     fi
@@ -171,6 +181,28 @@ restart_service() {
   fi
   sleep 1
   printf '%s 当前状态: %s\n' "$name" "$(svc_status "$key")"
+  if [ "$key" = core ] && [ "$PLATFORM" = openwrt ]; then
+    if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
+      say 'ERROR: 核心进程运行中，但至少一个 SOCKS5 节点未监听；不能判定为可用。'
+    fi
+  fi
+}
+# Explicitly replace old Go kernel with the independently tested OpenWrt build.
+# The installer checks ELF, runs a local SOCKS5 handshake, and backs up the old binary.
+repair_kernel() {
+  root_only || return
+  [ "$PLATFORM" = openwrt ] || { say '仅支持 OpenWrt 平台。'; return 1; }
+  ask '安装修复版 X-Tunnel 内核？旧二进制会备份，全部 SOCKS5 连接将短暂中断。' || return
+  if sh "$PROJECT_DIR/install.sh" --repair-kernel; then
+    say '已安装修复版内核，正在检查所有 SOCKS5 端口...'
+    if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
+      say 'ERROR: 核心可能仍在运行，但节点 SOCKS5 监听未全部就绪。请检查 X-Tunnel 连接日志。'
+      return 1
+    fi
+  else
+    say '修复未成功，已停止安装流程；旧二进制在预检失败时不会被替换。'
+    return 1
+  fi
 }
 install_services() {
   root_only || return
@@ -338,6 +370,7 @@ show_menu() {
   say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
   say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
   say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
+  say '19) 修复 Go 内核与 SOCKS5 监听'
   say ' 0) 退出'
 }
 while :; do
@@ -399,6 +432,7 @@ while :; do
     16) restart_service bot;;
     17) stop_core_only;;
     18) export_socks_providers;;
+    19) repair_kernel;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
