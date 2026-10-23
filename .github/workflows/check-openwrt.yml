@@ -22,6 +22,10 @@ jobs:
           sh -n menu.sh
           sh -n quick-install.sh
           sh -n openwrt/run-speedtest.sh
+          sh -n openwrt/speedtest-timer.sh
+          sh -n tests/test_speedtest_timer.sh
+      - name: Verify HH:MM cron management without modifying system cron
+        run: sh tests/test_speedtest_timer.sh
       - name: Check Python modules and export regression tests
         run: |
           python3 -m pip install PyYAML
