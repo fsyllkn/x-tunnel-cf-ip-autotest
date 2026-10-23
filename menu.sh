@@ -345,7 +345,7 @@ manage_timer() {
 }
 run_test() {
   root_only || return
-  say '注意：测速可能更新节点 CF IP，也会临时变更候选 IP 的直连路由。'
+  say '注意：测速可能更新节点 CF IP。旧式策略路由模式会临时添加候选 IP 路由；sing-box 网关模式不会修改这些路由。'
   ask '现在执行完整测速？' || return
   if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
   else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
