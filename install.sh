@@ -7,6 +7,7 @@ TIMER_AT=''
 WITH_BOT=0
 WITH_SPEEDTEST=0
 DISABLE_BOT=0
+REPAIR_KERNEL=0
 OPENWRT=0
 PLATFORM=systemd
 KERNEL_PATH=/usr/bin/x-tunnel
@@ -30,7 +31,8 @@ for argument in "$@"; do
         --with-bot) WITH_BOT=1; WITH_SPEEDTEST=1 ;;
         --with-speedtest) WITH_SPEEDTEST=1 ;;
         --disable-bot) DISABLE_BOT=1 ;;
-        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer|--timer-at=HH:MM] [--disable-bot]"; exit 0 ;;
+        --repair-kernel) REPAIR_KERNEL=1 ;;
+        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer|--timer-at=HH:MM] [--disable-bot] [--repair-kernel]"; exit 0 ;;
         *) echo "Invalid option: $argument. Use --help." >&2; exit 2 ;;
     esac
 done
@@ -102,17 +104,21 @@ if machine != expected_machine:
 PY
 }
 
+KERNEL_INSTALLED=0
 if [ -e "$KERNEL_PATH" ] || [ -L "$KERNEL_PATH" ]; then
-    [ -f "$KERNEL_PATH" ] || {
-        echo "$KERNEL_PATH exists but is not a regular file; move it aside before installing." >&2
+    [ -f "$KERNEL_PATH" ] && [ ! -L "$KERNEL_PATH" ] || {
+        echo "$KERNEL_PATH is a symlink or nonregular file; refusing replacement." >&2
         exit 1
     }
+    KERNEL_INSTALLED=1
+fi
+if [ "$KERNEL_INSTALLED" -eq 1 ] && [ "$REPAIR_KERNEL" -eq 0 ]; then
     validate_kernel "$KERNEL_PATH" || {
-        echo "Existing $KERNEL_PATH is invalid or for a different architecture; it was not replaced." >&2
+        echo "Existing $KERNEL_PATH is invalid; use explicit --repair-kernel to replace." >&2
         exit 1
     }
     chmod 0755 "$KERNEL_PATH"
-    echo "Using existing x-tunnel kernel ($machine); permissions set to 0755."
+    echo "Using existing X-Tunnel kernel ($machine); leaving binary unchanged."
 else
     release=${X_TUNNEL_KERNEL_VERSION:-$KERNEL_DEFAULT_VERSION}
     asset="x-tunnel-linux-$kernel_arch"
@@ -153,6 +159,11 @@ PY
     if [ -f "$PROJECT_DIR/openwrt/kernel_smoke.py" ]; then
         python3 "$PROJECT_DIR/openwrt/kernel_smoke.py" "$downloaded_kernel" ||
             { echo "X-Tunnel SOCKS5 preflight failed; binary not installed." >&2; exit 1; }
+    fi
+    if [ "$KERNEL_INSTALLED" -eq 1 ]; then
+        backup="$KERNEL_PATH.backup-$(date +%Y%m%d-%H%M%S)-$"
+        cp -p "$KERNEL_PATH" "$backup" || { echo 'Kernel backup failed; original left unchanged.' >&2; exit 1; }
+        echo "Saved previous X-Tunnel binary to $backup"
     fi
     copy_with_mode "$downloaded_kernel" "$KERNEL_PATH.new" 0755
     mv -f "$KERNEL_PATH.new" "$KERNEL_PATH"
