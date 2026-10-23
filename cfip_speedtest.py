@@ -623,20 +623,41 @@ class DirectCandidateRoutes:
         return ("singbox-gateway", None) if singbox_gateway else ("native-direct", None)
 
     @staticmethod
-    def verify_singbox_network_uid():
-        """Avoid proxy-contaminated CF measurements from root under local eBPF."""
-        table_route = subprocess.run(
-            ["ip", "-4", "route", "show", "table", "53136"],
-            capture_output=True, text=True, timeout=3, check=True,
-        ).stdout
-        if not re.search(r"(?m)^local (?:default|0\.0\.0\.0/0) dev lo\b", table_route):
-            raise RuntimeError("sing-box table 53136 is not a local TPROXY route")
-        nft = subprocess.run(
-            ["nft", "list", "table", "inet", "singbox_one_arm"],
+    def active_singbox_local_ebpf():
+        """Detect host-only sing-box eBPF, where ip rule still looks native."""
+        if not SINGBOX_GATEWAY_CONFIG.is_file() or not Path("/run/systemd/system").is_dir():
+            return False
+        service = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "sing-box.service"],
             capture_output=True, text=True, timeout=3,
         )
-        if nft.returncode:
-            raise RuntimeError("sing-box single-NIC nftables table is not active")
+        if service.returncode != 0:
+            return False
+        try:
+            config = json.loads(SINGBOX_GATEWAY_CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError("running sing-box config unreadable; refusing direct benchmark") from error
+        return any(
+            inbound.get("type") == "ebpf" and inbound.get("local", {}).get("enabled") is True
+            for inbound in config.get("inbounds", [])
+        )
+
+    @staticmethod
+    def verify_singbox_network_uid(require_gateway=True):
+        """Avoid proxy-contaminated CF measurements from root under local eBPF."""
+        if require_gateway:
+            table_route = subprocess.run(
+                ["ip", "-4", "route", "show", "table", "53136"],
+                capture_output=True, text=True, timeout=3, check=True,
+            ).stdout
+            if not re.search(r"(?m)^local (?:default|0\.0\.0\.0/0) dev lo\b", table_route):
+                raise RuntimeError("sing-box table 53136 is not a local TPROXY route")
+            nft = subprocess.run(
+                ["nft", "list", "table", "inet", "singbox_one_arm"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if nft.returncode:
+                raise RuntimeError("sing-box single-NIC nftables table is not active")
         load_project_env()
         raw_uid = os.environ.get("X_TUNNEL_PROCESS_UID", "29002")
         try:
@@ -827,10 +848,19 @@ class DirectCandidateRoutes:
             for value in self.candidates:
                 self.install_route(value)
             if any(mode == "singbox-gateway" for mode, _ in self.route_modes.values()):
-                self.network_uid = self.verify_singbox_network_uid()
+                self.network_uid = self.verify_singbox_network_uid(require_gateway=True)
                 print(
                     "sing-box gateway detected; CF probes run under eBPF-excluded "
                     "UID %d without changing policy routes" % self.network_uid,
+                    flush=True,
+                )
+            elif any(mode == "native-direct" for mode, _ in self.route_modes.values()) and (
+                self.active_singbox_local_ebpf()
+            ):
+                self.network_uid = self.verify_singbox_network_uid(require_gateway=False)
+                print(
+                    "Host-only sing-box eBPF detected; CF probes run under excluded "
+                    "UID %d using ordinary main-table routes" % self.network_uid,
                     flush=True,
                 )
         except BaseException:
