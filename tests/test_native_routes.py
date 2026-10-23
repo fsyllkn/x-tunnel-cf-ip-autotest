@@ -160,7 +160,7 @@ class NativeRoutesTest(unittest.TestCase):
             if command == ["systemd-detect-virt", "--container"]:
                 return completed(command, "lxc\n")
             if command == ["nft", "list", "table", "inet", "singbox_lxc_guard"]:
-                return completed(command, "", status=1)
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
             if command == ["systemctl", "is-active", "--quiet", "sing-box.service"]:
                 return completed(command, "")
             raise AssertionError("unexpected command: %r" % command)
