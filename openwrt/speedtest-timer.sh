@@ -68,9 +68,9 @@ change_schedule() {
     if [ "$operation" = enable ]; then
         hour=${time%:*}
         minute=${time#*:}
-        # Strip leading zeros for clarity; 00 is valid as a cron integer.
-        hour=$((10#$hour))
-        minute=$((10#$minute))
+        # POSIX sh / BusyBox ash: convert 06 -> 6, 00 -> 0 (no bash arithmetic).
+        case "$hour" in 0*) hour=${hour#0} ;; esac
+        case "$minute" in 0*) minute=${minute#0} ;; esac
         printf '%s\n' "$MARKER" >> "$tmp"
         printf "%s %s * * * /bin/sh '%s/openwrt/run-speedtest.sh' >> '%s/cfip-data/cron.log' 2>&1\n" \
             "$minute" "$hour" "$PROJECT_DIR" "$PROJECT_DIR" >> "$tmp"
