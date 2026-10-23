@@ -3,6 +3,7 @@
 set -u
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 cd "$PROJECT_DIR" || exit 1
+TIMER_SCRIPT="$PROJECT_DIR/openwrt/speedtest-timer.sh"
 if [ -f /etc/openwrt_release ] || { [ -f /etc/rc.common ] && [ -x /sbin/procd ]; }; then
   PLATFORM=openwrt
 elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
@@ -33,7 +34,14 @@ svc_status() {
 }
 timer_status() {
   if [ "$PLATFORM" = openwrt ]; then
-    if [ -f /etc/crontabs/root ] && grep -Fq '# x-tunnel-cf-ip-autotest daily speedtest' /etc/crontabs/root; then printf '已开启'; else printf '未开启'; fi
+    if [ -f "$TIMER_SCRIPT" ]; then
+      scheduled=$(sh "$TIMER_SCRIPT" status 2>/dev/null) || scheduled=disabled
+      if [ "$scheduled" = disabled ]; then printf '未开启'; else printf '已开启 (%s)' "$scheduled"; fi
+    elif [ -f /etc/crontabs/root ] && grep -Fq '# x-tunnel-cf-ip-autotest daily speedtest' /etc/crontabs/root; then
+      printf '已开启（旧版配置）'
+    else
+      printf '未开启'
+    fi
   elif [ "$PLATFORM" = systemd ]; then
     if systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then printf '已开启'; else printf '未开启'; fi
   else printf '未知'; fi
@@ -317,30 +325,47 @@ else:
     0) return;;
   esac
 }
-disable_timer_ow() {
-  [ -f /etc/crontabs/root ] || return 0
-  tmp="/etc/crontabs/root.xtunnel-menu.$$"
-  awk '
-    $0=="# x-tunnel-cf-ip-autotest daily speedtest" { skip=1; next }
-    skip==1 && /openwrt\/run-speedtest\.sh/ { skip=0; next }
-    { skip=0; print }
-  ' /etc/crontabs/root > "$tmp" || { rm -f "$tmp"; return 1; }
-  cat "$tmp" > /etc/crontabs/root
-  rm -f "$tmp"
-  [ -x /etc/init.d/cron ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
-}
 manage_timer() {
   root_only || return
   say "当前: $(timer_status)"
-  say '1) 开启每天 18:00 测速  2) 关闭自动测速  0) 返回'
+  if [ "$PLATFORM" = openwrt ]; then
+    say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
+  else
+    say '1) 开启定时测速  2) 关闭自动测速  0) 返回'
+  fi
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
-      if [ "$PLATFORM" = openwrt ]; then sh "$PROJECT_DIR/install.sh" --enable-timer || say '启用失败。'
-      else systemctl enable --now x-tunnel-speedtest.timer || say '启用失败。'; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        [ -f "$TIMER_SCRIPT" ] || { say '找不到定时管理脚本，请先更新 openwrt 源码。'; return; }
+        saved=$(sh "$TIMER_SCRIPT" status) || { say '读取定时任务失败。'; return; }
+        default_time=$saved
+        [ "$default_time" != disabled ] || default_time=18:00
+        printf '每日测速时间（24小时制 HH:MM）[%s]: ' "$default_time"
+        IFS= read -r chosen || return
+        chosen=${chosen:-$default_time}
+        if ! sh "$TIMER_SCRIPT" validate "$chosen"; then
+          say '时间格式错误，请输入 00:00 至 23:59，例如 06:45、18:00、23:30。'
+          return
+        fi
+        if [ -f /etc/init.d/x-tunnel ] &&
+           (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest' >/dev/null 2>&1); then
+          sh "$TIMER_SCRIPT" enable "$chosen" || say '设置定时测速失败。'
+        else
+          say '首次启用需安装测速依赖；安装器可能重启 X-Tunnel 核心。'
+          sh "$PROJECT_DIR/install.sh" --enable-timer "--timer-at=$chosen" || say '启用失败。'
+        fi
+      else
+        systemctl enable --now x-tunnel-speedtest.timer || say '启用失败。'
+      fi ;;
     2)
-      if [ "$PLATFORM" = openwrt ]; then disable_timer_ow && say '已关闭。'
-      else systemctl disable --now x-tunnel-speedtest.timer || say '关闭失败。'; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        [ -f "$TIMER_SCRIPT" ] || { say '找不到定时管理脚本，请先更新 openwrt 源码。'; return; }
+        sh "$TIMER_SCRIPT" disable || say '关闭失败。'
+      else
+        systemctl disable --now x-tunnel-speedtest.timer || say '关闭失败。'
+      fi ;;
+    0) return ;;
   esac
 }
 run_test() {
