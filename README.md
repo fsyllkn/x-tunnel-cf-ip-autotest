@@ -1,3 +1,11 @@
+# PVE LXC 专用 X-Tunnel + Cloudflare IP 测速（lxc）
+
+**这是 PVE 非特权 Debian/Ubuntu LXC 的配套分支。** 推荐先阅读 [LXC.md](LXC.md) 和 [sing-box LXC 部署指南](https://github.com/fsyllkn/linux_openwrt-sing-box/tree/lxc)。
+
+其余 Linux systemd 功能与 main 的文档一致。下面保留完整功能介绍与管理说明。
+
+---
+
 # X-Tunnel + Cloudflare IP 测速（Debian / Ubuntu main）
 
 本分支面向 **Debian / Ubuntu 的 systemd 环境**，承接 [OpenWrt 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt) 已验证的 CF IP RTT/下载测速、自动候选筛选、多节点 SOCKS5、Provider 导出、独立 UID 防 sing-box eBPF 回环及可配置定时测速。两条分支的服务管理不同：本分支使用 systemd，不修改路由器 nftables 或 sing-box 规则。
