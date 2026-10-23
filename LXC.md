@@ -25,7 +25,7 @@ sudo python3 systemd/speedtest-timer.py status
 测速有两种路由情形：
 
 - **仅 HTTP/SOCKS5 mixed 代理**：不存在 sing-box IP 策略路由和 local eBPF；使用标准 direct route 进行 CF RTT 与下载测速。
-- **纯 TPROXY 网关**：存在 `fwmark 0x1536 -> table 53136`，只有检查 `singbox_one_arm`、`singbox_lxc_guard`、`systemd-detect-virt --container=lxc`、活动 sing-box 服务及无 eBPF 配置都通过，才允许使用本机 OUTPUT 路径测试；不覆盖或清理 sing-box 的 policy rule。如果检查失败会拒绝测速。
+- **纯 TPROXY 网关**：存在 `fwmark 0x1536 -> table 53136`，只有检查 `singbox_one_arm`、`singbox_lxc_guard`、`systemd-detect-virt --container` 返回 `lxc`、活动 sing-box 服务及无 eBPF 配置都通过，才允许使用本机 OUTPUT 路径测试；不覆盖或清理 sing-box 的 policy rule。如果检查失败会拒绝测速。
 
 显式 HTTP/SOCKS5 代理使用 LAN IP:7890 时，Linux 自己的普通 OUTPUT 并不自动经过这个代理。LXC TPROXY 只拦截从 `eth0` 进入的受控 LAN 流量。
 
