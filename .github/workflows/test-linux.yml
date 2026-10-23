@@ -18,8 +18,9 @@ jobs:
           python-version: '3.11'
       - name: Check POSIX shells
         run: |
-          sh -n install.sh menu.sh quick-install.sh uninstall.sh
-          sh -n openwrt/run-speedtest.sh
+          for f in install.sh menu.sh quick-install.sh uninstall.sh openwrt/run-speedtest.sh; do
+            sh -n "$f"
+          done
       - name: Test shared CF speedtest and Linux scheduling
         run: |
           python3 -m pip install PyYAML
