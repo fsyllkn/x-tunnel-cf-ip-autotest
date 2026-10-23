@@ -670,11 +670,45 @@ class DirectCandidateRoutes:
             data = json.loads(SINGBOX_GATEWAY_CONFIG.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise RuntimeError("cannot inspect sing-box eBPF UID exclusions") from error
-        if not any(
-            inbound.get("type") == "ebpf"
+        ebpf_inbounds = [
+            inbound for inbound in data.get("inbounds", [])
+            if inbound.get("type") == "ebpf"
             and inbound.get("local", {}).get("enabled") is True
-            and uid in inbound.get("local", {}).get("exclude_uid", [])
-            for inbound in data.get("inbounds", [])
+        ]
+        if not ebpf_inbounds and require_gateway:
+            # LXC standalone gateway deliberately uses nft PREROUTING only;
+            # locally generated CF sockets are NOT transparently redirected.
+            # Require all of the dedicated LXC markers before allowing this
+            # no-eBPF path; avoid accidentally accepting another proxy.
+            virt = subprocess.run(
+                ["systemd-detect-virt", "--container"], capture_output=True,
+                text=True, timeout=3,
+            )
+            guard = subprocess.run(
+                ["nft", "list", "table", "inet", "singbox_lxc_guard"],
+                capture_output=True, text=True, timeout=3,
+            )
+            service = subprocess.run(
+                ["systemctl", "is-active", "--quiet", "sing-box.service"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if (
+                virt.returncode == 0 and virt.stdout.strip() == "lxc"
+                and guard.returncode == 0 and service.returncode == 0
+                and any(inbound.get("type") == "tproxy"
+                        and inbound.get("tag") == "lan-tproxy"
+                        for inbound in data.get("inbounds", []))
+                and not any(inbound.get("type") == "ebpf"
+                            for inbound in data.get("inbounds", []))
+            ):
+                return None
+            raise RuntimeError(
+                "sing-box without eBPF was detected but dedicated LXC gateway "
+                "markers or active service are missing; refusing CF benchmark"
+            )
+        if not any(
+            uid in inbound.get("local", {}).get("exclude_uid", [])
+            for inbound in ebpf_inbounds
         ):
             raise RuntimeError(
                 "X-Tunnel UID %d is not excluded by sing-box local eBPF; "
@@ -849,11 +883,18 @@ class DirectCandidateRoutes:
                 self.install_route(value)
             if any(mode == "singbox-gateway" for mode, _ in self.route_modes.values()):
                 self.network_uid = self.verify_singbox_network_uid(require_gateway=True)
-                print(
-                    "sing-box gateway detected; CF probes run under eBPF-excluded "
-                    "UID %d without changing policy routes" % self.network_uid,
-                    flush=True,
-                )
+                if self.network_uid is None:
+                    print(
+                        "LXC pure-TPROXY gateway detected; CF probes use ordinary "
+                        "root OUTPUT (not LAN PREROUTING); no route changes",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "sing-box gateway detected; CF probes run under eBPF-excluded "
+                        "UID %d without changing policy routes" % self.network_uid,
+                        flush=True,
+                    )
             elif any(mode == "native-direct" for mode, _ in self.route_modes.values()) and (
                 self.active_singbox_local_ebpf()
             ):
