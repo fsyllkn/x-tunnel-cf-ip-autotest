@@ -13,11 +13,11 @@ for arg in "$@"; do
  case "$arg" in
    --menu) MENU_MODE=1 ;;
    --core) MENU_MODE=0 ;;
-   --with-bot|--with-speedtest|--enable-timer|--disable-bot)
+   --with-bot|--with-speedtest|--enable-timer|--disable-bot|--timer-at=*)
      MENU_MODE=0
      INSTALL_ARGS="$INSTALL_ARGS $arg" ;;
    -h|--help)
-     echo "Usage: sh quick-install.sh [--menu|--core|--with-bot|--with-speedtest|--enable-timer|--disable-bot]"
+     echo "Usage: sh quick-install.sh [--menu|--core|--with-bot|--with-speedtest|--enable-timer|--timer-at=HH:MM|--disable-bot]"
      echo "No arguments: interactive installation/management menu (SSH terminal required)."
      exit 0 ;;
    *) echo "Unknown option: $arg" >&2; exit 2 ;;
