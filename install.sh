@@ -53,6 +53,19 @@ if [ "$OPENWRT" -eq 0 ] && [ "$ENABLE_TIMER" -eq 1 ]; then
     fi
 fi
 printf 'Detected platform: %s; Bot: %s; speedtest: %s\n' "$PLATFORM" "$WITH_BOT" "$WITH_SPEEDTEST"
+if [ "$OPENWRT" -eq 0 ]; then
+    if ! command -v python3 >/dev/null 2>&1 ||
+       ! python3 -c 'import yaml, ssl, urllib.request, hashlib' >/dev/null 2>&1 ||
+       ! command -v ip >/dev/null 2>&1 ||
+       { ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; }; then
+        command -v apt-get >/dev/null 2>&1 || {
+            echo 'apt-get required to install Debian/Ubuntu dependencies.' >&2; exit 1;
+        }
+        apt-get update &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y                 python3 python3-yaml iproute2 curl ca-certificates ||
+            { echo 'Could not install required Debian/Ubuntu packages.' >&2; exit 1; }
+    fi
+fi
 python3 -c 'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required for dedicated child UID isolation"' || exit 1
 
 required_commands="ip sed cp chmod mkdir mv python3 uname"
