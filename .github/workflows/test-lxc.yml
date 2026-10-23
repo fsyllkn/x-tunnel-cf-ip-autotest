@@ -1,0 +1,25 @@
+name: Validate PVE LXC X-Tunnel
+
+on:
+  push:
+    branches: [lxc]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lxc-compatible:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check script syntax and dependencies
+        run: |
+          sh -n install.sh menu.sh quick-install.sh uninstall.sh
+          python3 -m pip install PyYAML
+          python3 -m compileall -q cfip_speedtest.py supervisor.py sync_singbox.py systemd tests
+      - name: Test CF direct routes, isolated UID, timer and export
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
