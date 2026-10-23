@@ -46,6 +46,93 @@ class NativeRoutesTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 DirectCandidateRoutes.routing_mode("-4", "100")
 
+
+    def test_singbox_one_nic_gateway_is_recognized_without_adding_routes(self):
+        rules = (
+            DEFAULT_IPV4_RULES
+            + "15360: from all fwmark 0x1536 lookup 53136\n"
+        )
+        seen = []
+
+        def fake_ip(command, **kwargs):
+            seen.append(command)
+            if command == ["ip", "-4", "rule", "show"]:
+                return completed(command, rules)
+            if command == ["ip", "-4", "route", "get", "1.1.1.1"]:
+                return completed(command, SAMPLE_LAN_ROUTE)
+            raise AssertionError("unexpected routing mutation: %r" % command)
+
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_ip), \
+                mock.patch.object(DirectCandidateRoutes, "cleanup_stale_routes"), \
+                mock.patch.object(
+                    DirectCandidateRoutes, "verify_singbox_network_uid",
+                    return_value=29002,
+                ):
+            self.assertEqual(
+                DirectCandidateRoutes.routing_mode("-4", "100"),
+                ("singbox-gateway", None),
+            )
+            with DirectCandidateRoutes(["1.1.1.1"]) as route_guard:
+                self.assertEqual(route_guard.network_uid, 29002)
+                self.assertEqual(route_guard.routes, [])
+
+        self.assertFalse(any("add" in command or "del" in command for command in seen))
+
+    def test_unknown_gateway_mark_is_still_rejected(self):
+        rules = DEFAULT_IPV4_RULES + "15360: from all fwmark 0x1537 lookup 53136\n"
+        with mock.patch("cfip_speedtest.subprocess.run", return_value=completed([], rules)):
+            with self.assertRaises(RuntimeError):
+                DirectCandidateRoutes.routing_mode("-4", "100")
+
+    def test_singbox_gateway_requires_ebpf_exclusion(self):
+        def fake_run(command, **kwargs):
+            if command == ["ip", "-4", "route", "show", "table", "53136"]:
+                return completed(command, "local default dev lo scope host\n")
+            if command == ["nft", "list", "table", "inet", "singbox_one_arm"]:
+                return completed(command, "table inet singbox_one_arm { }\n")
+            raise AssertionError("unexpected command: %r" % command)
+
+        wrong_config = '{"inbounds":[{"type":"ebpf","local":{"enabled":true,"exclude_uid":[]}}]}'
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_run), \
+                mock.patch("cfip_speedtest.load_project_env"), \
+                mock.patch.dict("os.environ", {"X_TUNNEL_PROCESS_UID": "29002"}), \
+                mock.patch("cfip_speedtest.SINGBOX_GATEWAY_CONFIG") as config_path:
+            config_path.read_text.return_value = wrong_config
+            with self.assertRaisesRegex(RuntimeError, "not excluded"):
+                DirectCandidateRoutes.verify_singbox_network_uid()
+            config_path.read_text.return_value = wrong_config.replace(
+                '"exclude_uid":[]', '"exclude_uid":[29002]'
+            )
+            self.assertEqual(DirectCandidateRoutes.verify_singbox_network_uid(), 29002)
+
+    def test_rtt_delegates_to_excluded_network_worker(self):
+        mocked = iter([{"type": "rtt", "ip": "1.1.1.1",
+                        "measurement": {"latency_ms": 18, "colo": "NRT"}}])
+        with mock.patch("cfip_speedtest.isolated_worker_messages", return_value=mocked) as spawn:
+            self.assertEqual(
+                list(__import__("cfip_speedtest").measure_rtt_candidates(
+                    ["1.1.1.1"], 443, True, 10, network_uid=29002
+                )),
+                [("1.1.1.1", {"latency_ms": 18, "colo": "NRT"})],
+            )
+            self.assertEqual(spawn.call_args.args[:2], (29002, "rtt"))
+
+    def test_speed_worker_progress_and_result(self):
+        updates = []
+        responses = iter([
+            {"type": "progress", "message": "download started"},
+            {"type": "result", "measurement": {"stable_kib": 1000}},
+        ])
+        with mock.patch("cfip_speedtest.isolated_worker_messages", return_value=responses) as spawn:
+            result = __import__("cfip_speedtest").measure_download(
+                mock.Mock(network_uid=29002),
+                "1.1.1.1", "https", "example.org", "/file", True,
+                duration=15, progress_callback=updates.append,
+            )
+        self.assertEqual(result, {"stable_kib": 1000})
+        self.assertEqual(updates, ["download started"])
+        self.assertEqual(spawn.call_args.args[:2], (29002, "speed"))
+
     def test_native_mode_never_adds_routes(self):
         seen = []
 
