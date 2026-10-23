@@ -50,10 +50,13 @@ def launch_speedtest(ip=None):
 
 
 def restart_xtunnel():
+    # Do not invoke OpenWrt procd paths on Ubuntu/Debian.
+    if is_systemd():
+        command = ["systemctl", "restart", "x-tunnel.service"]
+    elif is_openwrt():
+        command = ["/etc/init.d/x-tunnel", "restart"]
+    else:
+        raise RuntimeError("unsupported service manager for X-Tunnel restart")
     return subprocess.run(
-        ["/etc/init.d/x-tunnel", "restart"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        command, capture_output=True, text=True, timeout=30, check=False,
     )
