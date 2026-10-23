@@ -3,6 +3,8 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ENABLE_TIMER=0
+TIMER_AT=''
+TIMER_AT_EXPLICIT=0
 WITH_BOT=0
 WITH_SPEEDTEST=0
 DISABLE_BOT=0
@@ -23,11 +25,12 @@ fi
 for argument in "$@"; do
     case "$argument" in
         --enable-timer) ENABLE_TIMER=1; WITH_SPEEDTEST=1 ;;
+        --timer-at=*) ENABLE_TIMER=1; WITH_SPEEDTEST=1; TIMER_AT_EXPLICIT=1; TIMER_AT=${argument#*=} ;;
         --with-bot) WITH_BOT=1; WITH_SPEEDTEST=1 ;;
         --with-speedtest) WITH_SPEEDTEST=1 ;;
         --disable-bot) DISABLE_BOT=1 ;;
         --repair-kernel) REPAIR_KERNEL=1 ;;
-        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer] [--disable-bot] [--repair-kernel]"; exit 0 ;;
+        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer] [--timer-at=HH:MM] [--disable-bot] [--repair-kernel]"; exit 0 ;;
         *) echo "Invalid option. Use --help." >&2; exit 2 ;;
     esac
 done
@@ -38,6 +41,16 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 [ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
+if [ "$ENABLE_TIMER" -eq 1 ]; then
+    TIMER_SCRIPT="$PROJECT_DIR/openwrt/speedtest-timer.sh"
+    [ -f "$TIMER_SCRIPT" ] || { echo "Missing speedtest timer manager: $TIMER_SCRIPT" >&2; exit 1; }
+    if [ "$TIMER_AT_EXPLICIT" -eq 1 ]; then
+        sh "$TIMER_SCRIPT" validate "$TIMER_AT" || exit 2
+    else
+        TIMER_AT=$(sh "$TIMER_SCRIPT" status)
+        [ "$TIMER_AT" != disabled ] || TIMER_AT=18:00
+    fi
+fi
 mode=core-only
 if [ "$WITH_BOT" -eq 1 ]; then
     mode=core-plus-telegram-bot
@@ -330,15 +343,7 @@ if [ "$OPENWRT" -eq 1 ]; then
         /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
     fi
     if [ "$ENABLE_TIMER" -eq 1 ]; then
-        cron_entry="0 18 * * * /bin/sh '$PROJECT_DIR/openwrt/run-speedtest.sh' >> '$PROJECT_DIR/cfip-data/cron.log' 2>&1"
-        cron_marker="# x-tunnel-cf-ip-autotest daily speedtest"
-        mkdir -p /etc/crontabs
-        touch /etc/crontabs/root
-        if ! grep -Fq "$cron_marker" /etc/crontabs/root 2>/dev/null; then
-            printf '%s\n%s\n' "$cron_marker" "$cron_entry" >> /etc/crontabs/root
-        fi
-        /etc/init.d/cron enable
-        /etc/init.d/cron start
+        sh "$TIMER_SCRIPT" enable "$TIMER_AT"
     fi
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
         if [ -L /usr/bin/x-t ]; then
@@ -361,6 +366,6 @@ if [ "$OPENWRT" -eq 1 ]; then
     printf 'Installed X-Tunnel procd services from %s\n' "$PROJECT_DIR"
     printf 'Status: /etc/init.d/x-tunnel status; logread -e x-tunnel\n'
     if [ "$ENABLE_TIMER" -eq 0 ]; then
-        printf 'Daily 18:00 speed test unchanged; install with --enable-timer to add the cron job.\n'
+        printf 'Daily CF speedtest schedule unchanged; use --enable-timer or --timer-at=HH:MM to configure.\n'
     fi
 fi
