@@ -197,7 +197,7 @@ restart_service() {
   fi
   sleep 1
   printf '%s 当前状态: %s\n' "$name" "$(svc_status "$key")"
-  if [ "$key" = core ] && [ "$PLATFORM" = openwrt ]; then
+  if [ "$key" = core ] && [ -f "$PROJECT_DIR/openwrt/healthcheck.py" ]; then
     if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
       say 'ERROR: 核心进程运行中，但至少一个 SOCKS5 节点未监听；不能判定为可用。'
     fi
@@ -272,7 +272,7 @@ show_service_log_openwrt() {
 show_logs() {
   say '1) X-Tunnel 连接日志（仅核心）  2) CF IP 测速日志'
   say '3) Telegram Bot 日志        4) 服务状态'
-  say '5) 测速环境自检（不启动任务）  0) 返回'
+  say '5) 测速环境自检（不启动任务）  6) SOCKS5 握手健康检查  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
@@ -329,6 +329,9 @@ else:
       else
         say '提示：缺少 ip 命令，测速需要 ip-full。'
       fi ;;
+    6)
+      python3 "$PROJECT_DIR/openwrt/healthcheck.py" ||
+        say '发现至少一个 SOCKS5 节点未监听或未完成握手。' ;;
     0) return;;
   esac
 }
