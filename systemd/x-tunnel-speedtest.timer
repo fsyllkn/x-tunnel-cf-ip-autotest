@@ -1,9 +1,9 @@
 [Unit]
-Description=Run X-Tunnel Cloudflare IP speed test daily at 18:00 China time
+Description=Run X-Tunnel Cloudflare IP speedtest daily (local time; default 18:00)
 
 [Timer]
-OnCalendar=*-*-* 18:00:00 Asia/Shanghai
-Persistent=true
+OnCalendar=*-*-* 18:00:00
+Persistent=false
 AccuracySec=1min
 Unit=x-tunnel-speedtest.service
 
