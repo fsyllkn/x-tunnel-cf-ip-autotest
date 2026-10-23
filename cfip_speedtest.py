@@ -14,7 +14,6 @@ import shlex
 import signal
 import socket
 import ssl
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -29,6 +28,11 @@ DATA_DIR = BASE_DIR / "cfip-data"
 CONFIG_FILE = BASE_DIR / "x-tunnel.yaml"
 SCAN_LOCK_FILE = "/run/lock/x-tunnel-cfip-speedtest.lock"
 ROUTE_STATE_FILE = Path("/run/lock/x-tunnel-cfip-speedtest.routes.json")
+SINGBOX_GATEWAY_CONFIG = Path("/opt/sing-box/config/config.json")
+SINGBOX_GATEWAY_RULE = re.compile(
+    r"^\s*15360:\s+from all fwmark 0x1536(?:/0xffffffff)? lookup 53136\s*$",
+    re.I,
+)
 REPORT_FILE = DATA_DIR / "latest-results.json"
 BOT_CONFIG_FILE = Path(os.environ.get(
     "X_TUNNEL_BOT_CONFIG",
@@ -48,6 +52,34 @@ IPS_PER_REGIONAL_ROUND = 2
 MAX_NODE_CF_IPS = 2
 EARLY_DISCARD_SECONDS = 3.0
 DEFAULT_SPEED_DURATION = 30.0
+
+# OpenWrt python3-light may not bundle decimal/fractions, which the standard
+# library's statistics module imports. These three numeric operations are all
+# we need for RTT and speed-window aggregation; avoid adding python3-decimal.
+def arithmetic_mean(values):
+    values = list(values)
+    if not values:
+        raise ValueError("mean requires at least one value")
+    return sum(values) / len(values)
+
+
+def numeric_median(values):
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("median requires at least one value")
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def population_stddev(values, mean_value=None):
+    if not values:
+        raise ValueError("population standard deviation requires values")
+    if mean_value is None:
+        mean_value = arithmetic_mean(values)
+    return (sum((value - mean_value) ** 2 for value in values) / len(values)) ** 0.5
+
 
 
 def direct_read(url, timeout=8):
@@ -193,7 +225,7 @@ def test_rtt(ip, port, use_tls):
     colos = [item["colo"] for item in measurements if item["colo"]]
     colo = max(set(colos), key=colos.count) if colos else ""
     return {
-        "latency_ms": round(statistics.mean(item["latency_ms"] for item in measurements)),
+        "latency_ms": round(arithmetic_mean(item["latency_ms"] for item in measurements)),
         "colo": colo,
     }
 
@@ -397,9 +429,9 @@ def download_speed(
             if require_discard_window:
                 return None
             stable_windows = [rate for _, _, rate in windows]
-        average_kib = statistics.mean(stable_windows)
-        median_kib = statistics.median(stable_windows)
-        variation = statistics.pstdev(stable_windows) / average_kib if average_kib else 1.0
+        average_kib = arithmetic_mean(stable_windows)
+        median_kib = numeric_median(stable_windows)
+        variation = population_stddev(stable_windows, average_kib) / average_kib if average_kib else 1.0
         return {
             "ip": ip,
             "tcp_ms": tcp_ms,
@@ -422,24 +454,238 @@ def download_speed(
             connection.close()
 
 
+def _worker_emit(message):
+    sys.stdout.write(json.dumps(message, ensure_ascii=True) + "\n")
+    sys.stdout.flush()
+
+
+def isolated_network_worker(action):
+    """Run candidate TCP sockets in a non-root UID excluded from sing-box local eBPF."""
+    if os.geteuid() == 0:
+        raise RuntimeError("network test worker must not run as root")
+    payload = json.load(sys.stdin)
+    signal.alarm(240)
+    if action == "rtt":
+        candidates = payload["candidates"]
+        port = int(payload["port"])
+        tls = bool(payload["tls"])
+        workers = max(1, min(int(payload["workers"]), 50))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_ip = {
+                pool.submit(test_rtt, ip, port, tls): ip for ip in candidates
+            }
+            for future in concurrent.futures.as_completed(future_to_ip):
+                _worker_emit({
+                    "type": "rtt",
+                    "ip": future_to_ip[future],
+                    "measurement": future.result(),
+                })
+    elif action == "speed":
+        params = payload["params"]
+        params["progress_callback"] = lambda message: _worker_emit({
+            "type": "progress", "message": message,
+        })
+        measurement = download_speed(**params)
+        _worker_emit({"type": "result", "measurement": measurement})
+    else:
+        raise ValueError("unknown network worker operation")
+    return 0
+
+
+def isolated_worker_messages(uid, action, payload):
+    """Stream IPC from an eBPF-exempt UID without changing kernel routing tables."""
+    if os.geteuid() != 0 or uid <= 0:
+        raise RuntimeError("isolated CF tests require a root controller and non-root worker")
+    process = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--network-worker", action],
+        cwd=str(BASE_DIR),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        user=uid,
+        group=uid,
+        extra_groups=(),
+    )
+    try:
+        process.stdin.write(json.dumps(payload))
+        process.stdin.close()
+        for line in process.stdout:
+            if line.strip():
+                yield json.loads(line)
+        error_text = process.stderr.read().strip()
+        if process.wait() != 0:
+            raise RuntimeError(
+                "isolated CF network worker failed (UID %d): %s"
+                % (uid, error_text[-900:] or "no error text")
+            )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def measure_rtt_candidates(candidates, port, use_tls, workers, network_uid=None):
+    if network_uid is not None:
+        payload = {
+            "candidates": candidates, "port": port,
+            "tls": use_tls, "workers": workers,
+        }
+        received = 0
+        for message in isolated_worker_messages(network_uid, "rtt", payload):
+            if message.get("type") != "rtt":
+                raise RuntimeError("invalid RTT worker response")
+            received += 1
+            yield message["ip"], message["measurement"]
+        if received != len(candidates):
+            raise RuntimeError("isolated RTT worker returned incomplete candidate results")
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_ip = {
+            pool.submit(test_rtt, ip, port, use_tls): ip for ip in candidates
+        }
+        for future in concurrent.futures.as_completed(future_to_ip):
+            yield future_to_ip[future], future.result()
+
+
+def measure_download(routes, ip, scheme, domain, request_path, use_tls, **kwargs):
+    if routes.network_uid is None:
+        return download_speed(ip, scheme, domain, request_path, use_tls, **kwargs)
+    callback = kwargs.pop("progress_callback", None)
+    params = {
+        "ip": ip, "scheme": scheme, "domain": domain,
+        "request_path": request_path, "use_tls": use_tls,
+        **kwargs,
+    }
+    measurement_seen = False
+    measurement = None
+    for message in isolated_worker_messages(
+        routes.network_uid, "speed", {"params": params}
+    ):
+        if message.get("type") == "progress":
+            if callback:
+                callback(message["message"])
+        elif message.get("type") == "result":
+            measurement_seen = True
+            measurement = message["measurement"]
+        else:
+            raise RuntimeError("invalid bandwidth worker response")
+    if not measurement_seen:
+        raise RuntimeError("isolated bandwidth worker returned no measurement")
+    return measurement
+
+
 class DirectCandidateRoutes:
     def __init__(self, candidates):
         self.candidates = list(dict.fromkeys(candidates))
         self.routes = []
         self.old_signal_handlers = {}
+        self.route_modes = {}
+        self.network_uid = None
 
     @staticmethod
-    def policy_mark(family, table):
+    def routing_mode(family, table):
+        """Accept a known marked policy or an unmodified Linux default rule set."""
         rules = subprocess.run(
-            ["ip", family, "rule", "show"], capture_output=True, text=True, check=True,
-        ).stdout
-        for line in rules.splitlines():
-            match = re.search(r"\bfwmark\s+(0x[\da-fA-F]+)(?:/\S+)?\s+lookup\s+%s\b" % table, line)
+            ["ip", family, "rule", "show"],
+            capture_output=True, text=True, timeout=3, check=True,
+        ).stdout.splitlines()
+        for line in rules:
+            match = re.search(
+                r"\bfwmark\s+(0x[\da-fA-F]+)(?:/\S+)?\s+lookup\s+%s\b" % table,
+                line,
+            )
             if match:
-                return match.group(1)
-        raise RuntimeError(
-            "ShellCrash policy route table %s was not found; refusing to test through the proxy" % table
+                return "marked-policy", match.group(1)
+
+        # When the kernel only has the default rules, traffic uses main and
+        # no proxy-specific routing table needs to be created for a speedtest.
+        standard = {
+            "from all lookup local",
+            "from all lookup main",
+            "from all lookup default",
+        }
+        observed = []
+        singbox_gateway = False
+        for line in rules:
+            match = re.match(r"^\s*\d+:\s*(.*?)\s*$", line)
+            if family == "-4" and SINGBOX_GATEWAY_RULE.fullmatch(line):
+                singbox_gateway = True
+            elif not match or match.group(1) not in standard:
+                raise RuntimeError(
+                    "Unrecognized %s policy rules without fwmark/table %s; "
+                    "refusing to assume direct routing" % (family, table)
+                )
+            else:
+                observed.append(match.group(1))
+        if "from all lookup main" not in observed:
+            raise RuntimeError("No normal main routing rule for %s" % family)
+        return ("singbox-gateway", None) if singbox_gateway else ("native-direct", None)
+
+    @staticmethod
+    def verify_singbox_network_uid():
+        """Avoid proxy-contaminated CF measurements from root under local eBPF."""
+        table_route = subprocess.run(
+            ["ip", "-4", "route", "show", "table", "53136"],
+            capture_output=True, text=True, timeout=3, check=True,
+        ).stdout
+        if not re.search(r"(?m)^local (?:default|0\.0\.0\.0/0) dev lo\b", table_route):
+            raise RuntimeError("sing-box table 53136 is not a local TPROXY route")
+        nft = subprocess.run(
+            ["nft", "list", "table", "inet", "singbox_one_arm"],
+            capture_output=True, text=True, timeout=3,
         )
+        if nft.returncode:
+            raise RuntimeError("sing-box single-NIC nftables table is not active")
+        load_project_env()
+        raw_uid = os.environ.get("X_TUNNEL_PROCESS_UID", "29002")
+        try:
+            uid = int(raw_uid)
+        except ValueError as error:
+            raise RuntimeError("invalid X_TUNNEL_PROCESS_UID") from error
+        if uid < 1000:
+            raise RuntimeError("CF worker needs an isolated non-root X-Tunnel UID")
+        try:
+            data = json.loads(SINGBOX_GATEWAY_CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError("cannot inspect sing-box eBPF UID exclusions") from error
+        if not any(
+            inbound.get("type") == "ebpf"
+            and inbound.get("local", {}).get("enabled") is True
+            and uid in inbound.get("local", {}).get("exclude_uid", [])
+            for inbound in data.get("inbounds", [])
+        ):
+            raise RuntimeError(
+                "X-Tunnel UID %d is not excluded by sing-box local eBPF; "
+                "refusing CF benchmark through a proxy" % uid
+            )
+        return uid
+
+    @staticmethod
+    def verify_native_route(value, family):
+        """Check route via the main table, without changing any kernel routes."""
+        result = subprocess.run(
+            ["ip", family, "route", "get", value],
+            capture_output=True, text=True, timeout=3, check=True,
+        )
+        fields = result.stdout.split()
+        if not fields or fields[0] in (
+            "local", "broadcast", "unreachable", "blackhole", "prohibit", "throw"
+        ):
+            raise RuntimeError("Route to %s is not ordinary unicast traffic" % value)
+        if "dev" not in fields or fields.index("dev") + 1 >= len(fields):
+            raise RuntimeError("Cannot determine outgoing interface for %s" % value)
+        device = fields[fields.index("dev") + 1]
+        if re.match(r"^(?:tun|tap|wg|utun|tailscale|zt|ppp|ipsec)\w*", device, re.I):
+            raise RuntimeError(
+                "Route to %s uses tunnel interface %s; refusing unsafe direct test"
+                % (value, device)
+            )
+        if "table" in fields:
+            index = fields.index("table") + 1
+            if index >= len(fields) or fields[index] not in ("main", "254"):
+                raise RuntimeError("Route to %s does not use the main table" % value)
+        print("Native route to %s via %s; no policy route changes" % (value, device), flush=True)
 
     @staticmethod
     def route_command(route, operation):
@@ -521,7 +767,14 @@ class DirectCandidateRoutes:
         address = ipaddress.ip_address(value)
         family = "-6" if address.version == 6 else "-4"
         table = "101" if address.version == 6 else "100"
-        mark = self.policy_mark(family, table)
+        if family not in self.route_modes:
+            self.route_modes[family] = self.routing_mode(family, table)
+            print("Speedtest route mode for %s: %s" %
+                  (family, self.route_modes[family][0]), flush=True)
+        mode, mark = self.route_modes[family]
+        if mode in ("native-direct", "singbox-gateway"):
+            self.verify_native_route(value, family)
+            return
         route = subprocess.run(
             ["ip", family, "route", "get", value],
             capture_output=True, text=True, timeout=3, check=True,
@@ -573,10 +826,21 @@ class DirectCandidateRoutes:
         try:
             for value in self.candidates:
                 self.install_route(value)
+            if any(mode == "singbox-gateway" for mode, _ in self.route_modes.values()):
+                self.network_uid = self.verify_singbox_network_uid()
+                print(
+                    "sing-box gateway detected; CF probes run under eBPF-excluded "
+                    "UID %d without changing policy routes" % self.network_uid,
+                    flush=True,
+                )
         except BaseException:
             self.__exit__(None, None, None)
             raise
-        print("Installed temporary direct bypass routes for %d candidate IP(s)" % len(self.routes), flush=True)
+        if self.routes:
+            print("Installed temporary direct bypass routes for %d candidate IP(s)" % len(self.routes), flush=True)
+        else:
+            print("Native routing validated for %d candidate IP(s); no routes added" %
+                  len(self.candidates), flush=True)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -1453,7 +1717,7 @@ def run_single_ip(ip, progress, use_tls=False):
             raise RuntimeError("已有 CF 自动测速或单 IP 测速正在运行") from error
 
         progress.update("🔎 CF 单 IP 测速\nIP：%s\n准备直连路由；测速 30 秒，前 5 秒作为热身。" % ip, force=True)
-        with DirectCandidateRoutes([ip]):
+        with DirectCandidateRoutes([ip]) as routes:
             _, domain, request_path = parse_speed_url(None, False)
             scheme = "https" if use_tls else "http"
             report.update({
@@ -1461,7 +1725,8 @@ def run_single_ip(ip, progress, use_tls=False):
                 "speed_test_host": domain,
                 "speed_test_path": request_path,
             })
-            measurement = download_speed(
+            measurement = measure_download(
+                routes,
                 ip,
                 scheme,
                 domain,
@@ -1636,7 +1901,7 @@ def main():
             candidates = make_candidates(args.family, args.limit, args.ip or [], True)
             supplemental_ips = [] if args.ip else supplemental_candidate_ips(args.family, node_names)
             candidates = list(dict.fromkeys(candidates + supplemental_ips))
-            with DirectCandidateRoutes(candidates):
+            with DirectCandidateRoutes(candidates) as routes:
                 report = {
                     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "ip_data_refreshed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -1679,32 +1944,27 @@ def main():
                 print("RTT probing %d IPv%d candidate(s) on TCP/%d..." % (len(candidates), args.family, port), flush=True)
                 results = []
                 rtt_completed = 0
-                with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-                    future_to_ip = {
-                        pool.submit(test_rtt, ip, port, args.tls): ip
-                        for ip in candidates
-                    }
-                    for future in concurrent.futures.as_completed(future_to_ip):
-                        rtt_completed += 1
-                        measurement = future.result()
-                        if measurement is not None:
-                            ip = future_to_ip[future]
-                            result = {
-                                "ip": ip,
-                                "latency_ms": measurement["latency_ms"],
-                                "colo": measurement["colo"],
-                            }
-                            results.append(result)
-                            records_by_ip[ip].update({
-                                "status": "rtt_passed",
-                                "latency_ms": measurement["latency_ms"],
-                                "rtt_colo": measurement["colo"],
-                            })
-                        else:
-                            records_by_ip[future_to_ip[future]]["status"] = "rtt_failed"
-                        progress.update("📡 RTT 筛选中：%d/%d\n有效：%d，正在保留低延迟候选" % (
-                            rtt_completed, len(candidates), len(results),
-                        ))
+                for ip, measurement in measure_rtt_candidates(
+                    candidates, port, args.tls, args.workers, routes.network_uid
+                ):
+                    rtt_completed += 1
+                    if measurement is not None:
+                        result = {
+                            "ip": ip,
+                            "latency_ms": measurement["latency_ms"],
+                            "colo": measurement["colo"],
+                        }
+                        results.append(result)
+                        records_by_ip[ip].update({
+                            "status": "rtt_passed",
+                            "latency_ms": measurement["latency_ms"],
+                            "rtt_colo": measurement["colo"],
+                        })
+                    else:
+                        records_by_ip[ip]["status"] = "rtt_failed"
+                    progress.update("📡 RTT 筛选中：%d/%d\n有效：%d，正在保留低延迟候选" % (
+                        rtt_completed, len(candidates), len(results),
+                    ))
                 ranked_results = sorted(results, key=lambda result: result["latency_ms"])
                 results = select_rtt_candidates(ranked_results, target_nodes, args.top)
                 selected_rtt_ips = {result["ip"] for result in results}
@@ -1749,8 +2009,8 @@ def main():
                         attempted_ips.add(result["ip"])
                         record = records_by_ip[result["ip"]]
                         record["status"] = "speed_test_running"
-                        measurement = download_speed(
-                            result["ip"], scheme, domain, request_path, scheme == "https",
+                        measurement = measure_download(
+                            routes, result["ip"], scheme, domain, request_path, scheme == "https",
                             duration=args.speed_duration,
                             discard_after=args.discard_after,
                             minimum_speed_mbps=MIN_APPLY_SPEED_MBPS,
@@ -2051,4 +2311,10 @@ def main():
     return exit_code
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--network-worker":
+        try:
+            sys.exit(isolated_network_worker(sys.argv[2]))
+        except Exception as error:
+            print("cfip_speedtest worker: %s" % error, file=sys.stderr)
+            sys.exit(1)
     sys.exit(main())
