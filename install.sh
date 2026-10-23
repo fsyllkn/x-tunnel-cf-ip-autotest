@@ -3,10 +3,15 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ENABLE_TIMER=0
+TIMER_AT=''
+WITH_BOT=0
+WITH_SPEEDTEST=0
+DISABLE_BOT=0
 OPENWRT=0
 PLATFORM=systemd
 KERNEL_PATH=/usr/bin/x-tunnel
-KERNEL_REPOSITORY=caichengle666/x-tunnel
+KERNEL_REPOSITORY=fsyllkn/x-tunnel
+KERNEL_DEFAULT_VERSION=openwrt-stable-go126-v1
 
 if [ -f /etc/openwrt_release ] || {
     [ -f /etc/rc.common ] && [ -x /sbin/procd ]
@@ -20,8 +25,13 @@ fi
 
 for argument in "$@"; do
     case "$argument" in
-        --enable-timer) ENABLE_TIMER=1 ;;
-        *) echo "Usage: $0 [--enable-timer]" >&2; exit 2 ;;
+        --enable-timer) ENABLE_TIMER=1; WITH_SPEEDTEST=1 ;;
+        --timer-at=*) ENABLE_TIMER=1; WITH_SPEEDTEST=1; TIMER_AT=${argument#*=} ;;
+        --with-bot) WITH_BOT=1; WITH_SPEEDTEST=1 ;;
+        --with-speedtest) WITH_SPEEDTEST=1 ;;
+        --disable-bot) DISABLE_BOT=1 ;;
+        --help|-h) echo "Usage: $0 [--with-bot] [--with-speedtest] [--enable-timer|--timer-at=HH:MM] [--disable-bot]"; exit 0 ;;
+        *) echo "Invalid option: $argument. Use --help." >&2; exit 2 ;;
     esac
 done
 
@@ -30,7 +40,18 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-printf 'Detected platform: %s\n' "$PLATFORM"
+[ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
+if [ "$OPENWRT" -eq 0 ] && [ "$ENABLE_TIMER" -eq 1 ]; then
+    TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"
+    [ -f "$TIMER_CLI" ] || { echo "Missing systemd timer manager." >&2; exit 1; }
+    if [ -n "$TIMER_AT" ]; then
+        python3 "$TIMER_CLI" validate "$TIMER_AT" || exit 2
+    else
+        TIMER_AT=$(python3 "$TIMER_CLI" saved)
+    fi
+fi
+printf 'Detected platform: %s; Bot: %s; speedtest: %s\n' "$PLATFORM" "$WITH_BOT" "$WITH_SPEEDTEST"
+python3 -c 'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required for dedicated child UID isolation"' || exit 1
 
 required_commands="ip sed cp chmod mkdir mv python3 uname"
 if [ "$OPENWRT" -eq 0 ]; then
@@ -93,7 +114,7 @@ if [ -e "$KERNEL_PATH" ] || [ -L "$KERNEL_PATH" ]; then
     chmod 0755 "$KERNEL_PATH"
     echo "Using existing x-tunnel kernel ($machine); permissions set to 0755."
 else
-    release=${X_TUNNEL_KERNEL_VERSION:-latest}
+    release=${X_TUNNEL_KERNEL_VERSION:-$KERNEL_DEFAULT_VERSION}
     asset="x-tunnel-linux-$kernel_arch"
     case "$release" in
         latest) download_url="https://github.com/$KERNEL_REPOSITORY/releases/latest/download/$asset" ;;
@@ -116,10 +137,23 @@ else
     fi
     validate_kernel "$downloaded_kernel"
     chmod 0755 "$downloaded_kernel"
+    if [ "$release" = "$KERNEL_DEFAULT_VERSION" ] && [ "$kernel_arch" = amd64 ]; then
+        python3 - "$downloaded_kernel" <<'PY'
+import hashlib, pathlib, sys
+expected = "ae3a79a4d2a6a8d7e1377afb2e022c5ed75b0157a694fb6aead9d86ab873ccc2"
+actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+if actual != expected:
+    raise SystemExit("X-Tunnel stable AMD64 SHA256 mismatch; binary not installed")
+PY
+    fi
     "$downloaded_kernel" -h >/dev/null 2>&1 || {
         echo "Downloaded x-tunnel kernel failed its startup check; it was not installed." >&2
         exit 1
     }
+    if [ -f "$PROJECT_DIR/openwrt/kernel_smoke.py" ]; then
+        python3 "$PROJECT_DIR/openwrt/kernel_smoke.py" "$downloaded_kernel" ||
+            { echo "X-Tunnel SOCKS5 preflight failed; binary not installed." >&2; exit 1; }
+    fi
     copy_with_mode "$downloaded_kernel" "$KERNEL_PATH.new" 0755
     mv -f "$KERNEL_PATH.new" "$KERNEL_PATH"
     echo "Installed x-tunnel kernel for $machine from $KERNEL_REPOSITORY ($release)."
@@ -130,19 +164,21 @@ fi
     echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
 }
-[ -f "$PROJECT_DIR/speedtest-bot.env" ] || {
+if [ "$WITH_BOT" -eq 1 ] && [ ! -f "$PROJECT_DIR/speedtest-bot.env" ]; then
     copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
-    echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun." >&2
+    echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun --with-bot." >&2
     exit 1
-}
+fi
 if [ ! -f "$PROJECT_DIR/project.env" ]; then
     copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
 fi
-chmod 0600 "$PROJECT_DIR/speedtest-bot.env" "$PROJECT_DIR/x-tunnel.yaml"
+chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
+[ ! -f "$PROJECT_DIR/speedtest-bot.env" ] || chmod 0600 "$PROJECT_DIR/speedtest-bot.env"
 chmod 0644 "$PROJECT_DIR/project.env"
 
 # OpenWrt's python3-light may omit standard library IDNA codecs.
 # urllib's HTTPS proxy tunnel setup requires this codec.
+if [ "$WITH_SPEEDTEST" -eq 1 ]; then
 python3 -c 'import codecs; codecs.lookup("idna")' >/dev/null 2>&1 || {
     if [ "$OPENWRT" -eq 1 ]; then
         echo "Python IDNA codec is missing. Install python3-codecs using apk add or opkg install." >&2
@@ -152,6 +188,7 @@ python3 -c 'import codecs; codecs.lookup("idna")' >/dev/null 2>&1 || {
     exit 1
 }
 
+fi
 python3 -c 'import yaml' >/dev/null 2>&1 || {
     if [ "$OPENWRT" -eq 1 ]; then
         echo "Python dependency PyYAML is missing (install python3-yaml with opkg/apk)." >&2
@@ -164,6 +201,7 @@ PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(c
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
+if [ "$WITH_BOT" -eq 1 ]; then
 python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
 import pathlib
 import shlex
@@ -180,6 +218,7 @@ if not values.get("TG_TOKEN") or "替换为" in values["TG_TOKEN"]:
 if not values.get("TG_CHATID", "").isdecimal():
     raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
 PY
+fi
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
 mkdir -p /run/lock
 chmod 0755 "$PROJECT_DIR/runtime"
@@ -248,8 +287,13 @@ else
     fi
 
     systemctl daemon-reload
-    systemctl enable x-tunnel.service x-tunnel-speedtest-bot.service
-    for unit in x-tunnel.service x-tunnel-speedtest-bot.service; do
+    systemctl enable x-tunnel.service
+    running_units="x-tunnel.service"
+    if [ "$WITH_BOT" -eq 1 ]; then
+        systemctl enable x-tunnel-speedtest-bot.service
+        running_units="$running_units x-tunnel-speedtest-bot.service"
+    fi
+    for unit in $running_units; do
         if systemctl is-active --quiet "$unit"; then
             systemctl restart "$unit"
         else
@@ -257,8 +301,11 @@ else
         fi
     done
 
+    if [ "$DISABLE_BOT" -eq 1 ]; then
+        systemctl disable --now x-tunnel-speedtest-bot.service >/dev/null 2>&1 || true
+    fi
     if [ "$ENABLE_TIMER" -eq 1 ]; then
-        systemctl enable --now x-tunnel-speedtest.timer
+        python3 "$TIMER_CLI" enable "$TIMER_AT"
     fi
 
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
@@ -268,6 +315,6 @@ else
     printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
     printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
     if [ "$ENABLE_TIMER" -eq 0 ]; then
-        printf 'Daily 18:00 (Asia/Shanghai) timer unchanged; enable with: systemctl enable --now x-tunnel-speedtest.timer\n'
+        printf 'Daily timer unchanged; run: python3 %s/systemd/speedtest-timer.py enable [HH:MM]\n' "$PROJECT_DIR"
     fi
 fi
