@@ -42,6 +42,9 @@ else
         rm -f "$dropin_dir/shellcrash-bypass.conf"
         rmdir "$dropin_dir" >/dev/null 2>&1 || true
     done
+    # Remove only our own systemd timer override; leave unrelated drop-ins alone.
+    rm -f /etc/systemd/system/x-tunnel-speedtest.timer.d/50-xtunnel-schedule.conf
+    rmdir /etc/systemd/system/x-tunnel-speedtest.timer.d >/dev/null 2>&1 || true
     systemctl daemon-reload
 fi
 
