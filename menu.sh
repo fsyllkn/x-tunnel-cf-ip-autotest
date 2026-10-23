@@ -3,6 +3,8 @@
 set -u
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 cd "$PROJECT_DIR" || exit 1
+TIMER_SCRIPT="$PROJECT_DIR/openwrt/speedtest-timer.sh"
+SYSTEMD_TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"
 if [ -f /etc/openwrt_release ] || { [ -f /etc/rc.common ] && [ -x /sbin/procd ]; }; then
   PLATFORM=openwrt
 elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
@@ -33,9 +35,23 @@ svc_status() {
 }
 timer_status() {
   if [ "$PLATFORM" = openwrt ]; then
-    if [ -f /etc/crontabs/root ] && grep -Fq '# x-tunnel-cf-ip-autotest daily speedtest' /etc/crontabs/root; then printf '已开启'; else printf '未开启'; fi
+    if [ -f "$TIMER_SCRIPT" ]; then
+      scheduled=$(sh "$TIMER_SCRIPT" status 2>/dev/null) || scheduled=disabled
+      if [ "$scheduled" = disabled ]; then printf '未开启'; else printf '已开启 (%s)' "$scheduled"; fi
+    elif [ -f /etc/crontabs/root ] && grep -Fq '# x-tunnel-cf-ip-autotest daily speedtest' /etc/crontabs/root; then
+      printf '已开启（旧版配置）'
+    else
+      printf '未开启'
+    fi
   elif [ "$PLATFORM" = systemd ]; then
-    if systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then printf '已开启'; else printf '未开启'; fi
+    if [ -f "$SYSTEMD_TIMER_CLI" ]; then
+      scheduled=$(python3 "$SYSTEMD_TIMER_CLI" status 2>/dev/null) || scheduled=disabled
+      if [ "$scheduled" = disabled ]; then printf '未开启'; else printf '已开启 (%s)' "$scheduled"; fi
+    elif systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then
+      printf '已开启（旧版配置）'
+    else
+      printf '未开启'
+    fi
   else printf '未知'; fi
 }
 prepare() {
@@ -45,6 +61,15 @@ prepare() {
     (umask 077; cp "$example" "$file") || return 1
   fi
   case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+}
+can_check_config() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  case "$1" in
+    x-tunnel.yaml) python3 -c 'import yaml, logging' >/dev/null 2>&1 ;;
+    speedtest-bot.env) python3 -c 'import urllib.request, codecs; codecs.lookup("idna")' >/dev/null 2>&1 ;;
+    project.env) python3 -c 'import pathlib, shlex' >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
 }
 check_config() {
   case "$1" in
@@ -65,7 +90,9 @@ edit_file() {
   say "配置已备份: $backup"
   vi "$file" || { say '编辑未完成。'; return; }
   case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
-  if check_config "$file"; then
+  if ! can_check_config "$file"; then
+    say '配置已保存。此设备尚缺少对应 Python 模块，安装所需功能时将检查配置。'
+  elif check_config "$file"; then
     say '校验成功。节点配置会自动重载；其他变量修改后请重启相关服务。'
   else
     say '配置校验失败，暂不要重启服务。'
@@ -91,73 +118,278 @@ manage_svc() {
     fi
   done
 }
+# Stop only X-Tunnel's procd core service and SOCKS5 children, leaving Bot
+# and scheduled CF IP speedtests untouched. This does not alter routes or DNS.
+stop_core_only() {
+  root_only || return
+  if ! svc_exists core; then
+    say 'X-Tunnel 核心服务尚未安装。'
+    return
+  fi
+  if [ "$(svc_status core)" = '已停止' ]; then
+    say 'X-Tunnel 核心服务已经停止。'
+    return
+  fi
+  ask '停止 X-Tunnel 核心和全部 SOCKS5 节点？现有连接会断开。' || return
+  if [ "$PLATFORM" = openwrt ]; then
+    /etc/init.d/x-tunnel stop || { say '停止核心服务失败，请检查日志。'; return 1; }
+  elif [ "$PLATFORM" = systemd ]; then
+    systemctl stop x-tunnel.service || { say '停止核心服务失败，请检查日志。'; return 1; }
+  else
+    say '不支持的服务管理系统。'
+    return 1
+  fi
+  say "X-Tunnel 核心状态: $(svc_status core)"
+}
+export_socks_providers() {
+  root_only || return
+  if ! (cd "$PROJECT_DIR" && python3 sync_singbox.py --export-only); then
+    say '导出失败。请先运行 X-Tunnel 核心生成 SOCKS5 Provider。'
+    return 1
+  fi
+  say '导出结果（仅 SOCKS5，不生成伪造的 ss:// 链接）：'
+  # The canonical provider may be redirected through project.env.
+  python3 -c '
+from sync_singbox import provider_path, CLASH_FILE, V2RAY_FILE, SOCKS_LINKS_FILE
+p = provider_path()
+for path in (p, p.parent / CLASH_FILE, p.parent / V2RAY_FILE, p.parent / SOCKS_LINKS_FILE):
+    print(path)
+'
+}
+# Main-menu restart shortcuts. A Bot restart does not touch X-Tunnel nodes.
+restart_service() {
+  root_only || return
+  key=$1
+  name=$(svc_name "$key")
+  if ! svc_exists "$key"; then
+    say "$name 尚未安装，请先安装对应服务。"
+    return
+  fi
+  if [ "$key" = core ]; then
+    ask '重启 X-Tunnel 核心及全部节点？连接会短暂中断。' || return
+  else
+    ask '仅重启 Telegram Bot？不会重启 X-Tunnel 节点。' || return
+  fi
+  say "正在重启 $name ..."
+  if [ "$PLATFORM" = openwrt ]; then
+    if [ "$key" = core ]; then
+      # Some fw3/procd builds report "Command failed: Not found" on
+      # restart despite successfully spawning the supervisor. Use an
+      # explicit stop + start instead, then check real SOCKS5 listeners.
+      "/etc/init.d/$name" stop >/dev/null 2>&1 || true
+      sleep 1
+      if ! "/etc/init.d/$name" start; then
+        say '核心服务启动失败，请检查 X-Tunnel 连接日志。'
+        return 1
+      fi
+    elif ! "/etc/init.d/$name" restart; then
+      say '重启命令失败，请进入服务管理菜单查看状态并尝试停止/启动。'
+      return 1
+    fi
+  elif [ "$PLATFORM" = systemd ]; then
+    if ! systemctl restart "$name.service"; then
+      say '重启命令失败，请查看服务日志。'
+      return 1
+    fi
+  else
+    say '不支持的服务管理系统。'
+    return 1
+  fi
+  sleep 1
+  printf '%s 当前状态: %s\n' "$name" "$(svc_status "$key")"
+  if [ "$key" = core ] && [ "$PLATFORM" = openwrt ]; then
+    if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
+      say 'ERROR: 核心进程运行中，但至少一个 SOCKS5 节点未监听；不能判定为可用。'
+    fi
+  fi
+}
+# Install the byte-identical Go 1.26 stable core recovered from the original single-file source.
+# The installer checks ELF, runs a local SOCKS5 handshake, and backs up the old binary.
+repair_kernel() {
+  root_only || return
+  [ "$PLATFORM" = openwrt ] || { say '仅支持 OpenWrt 平台。'; return 1; }
+  ask '安装已验证的 Go 1.26 稳定内核？将备份旧二进制，并短暂重启全部 SOCKS5 节点。' || return
+  if sh "$PROJECT_DIR/install.sh" --repair-kernel; then
+    say '已安装 Go 1.26 稳定内核，正在检查所有 SOCKS5 端口...'
+    if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
+      say 'ERROR: 核心可能仍在运行，但节点 SOCKS5 监听未全部就绪。请检查 X-Tunnel 连接日志。'
+      return 1
+    fi
+  else
+    say '修复未成功，已停止安装流程；旧二进制在预检失败时不会被替换。'
+    return 1
+  fi
+}
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
-  prepare speedtest-bot.env speedtest-bot.env.example || return
   prepare project.env project.env.example || return
-  say '安装器需要已填写的节点配置、TG_TOKEN 和 TG_CHATID。'
-  if ask '执行安装或修复服务？'; then
+  if grep -q 'example.com\|替换为' x-tunnel.yaml; then
+    say '检测到节点示例配置。请先填写真实 X-Tunnel 服务地址和密钥。'
+    if ask '现在编辑节点配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
+    return
+  fi
+  say '轻量核心模式：只部署 X-Tunnel 和 Provider，不要求 TG Bot 凭据。'
+  if ask '安装/修复核心服务（会重启 X-Tunnel）？'; then
     sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
   fi
 }
 update_code() {
   root_only || return
-  ask '从 GitHub 更新代码并重新部署（将重启服务）？' || return
-  if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh"; then
+  ask '从 GitHub main 分支更新代码并重新部署（将重启 X-Tunnel 核心）？' || return
+  if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh" --core; then
     say '更新结束，重新载入管理菜单。'
     exec /bin/sh "$PROJECT_DIR/menu.sh"
   else
     say '更新失败；旧配置保留，请查看上方错误。'
   fi
 }
+# procd labels inherited Go stdout/stderr as python3[SUPERVISOR_PID].
+# Resolve the actual script PID instead of printing the full system log:
+# that would mix unrelated sing-box, dnsmasq and other services.
+find_service_pids() {
+  target="$PROJECT_DIR/$1"
+  for entry in /proc/[0-9]*; do
+    [ -r "$entry/cmdline" ] || continue
+    if tr '\000' '\n' < "$entry/cmdline" 2>/dev/null | grep -Fxq "$target"; then
+      printf '%s\n' "${entry##*/}"
+    fi
+  done
+}
+show_service_log_openwrt() {
+  script="$1"
+  label="$2"
+  pids="$(find_service_pids "$script")"
+  if [ -z "$pids" ]; then
+    say "$label 当前未运行，无法确定现有 procd 日志所属 PID（不会混合其他服务日志）。"
+    return
+  fi
+  for pid in $pids; do
+    # The exact syslog tag identifies all Go child messages inherited via
+    # supervisor stdout, without matching unrelated python3 instances.
+    logread 2>/dev/null | grep -F "python3[$pid]:" || true
+  done | tail -n 100
+}
 show_logs() {
-  say '1) X-Tunnel/Bot 系统日志  2) 测速日志  3) 服务状态  0) 返回'
+  say '1) X-Tunnel 连接日志（仅核心）  2) CF IP 测速日志'
+  say '3) Telegram Bot 日志        4) 服务状态'
+  say '5) 测速环境自检（不启动任务）  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
-      if [ "$PLATFORM" = openwrt ]; then logread | tail -n 100
-      else journalctl --no-pager -n 100 -u x-tunnel.service -u x-tunnel-speedtest-bot.service; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        show_service_log_openwrt supervisor.py 'X-Tunnel 核心'
+      else
+        journalctl --no-pager -n 100 -u x-tunnel.service
+      fi ;;
     2)
       if [ "$PLATFORM" = openwrt ]; then
-        if [ -f cfip-data/openwrt-speedtest.log ]; then tail -n 100 cfip-data/openwrt-speedtest.log; else say '暂无测速日志。'; fi
-      else journalctl --no-pager -n 100 -u x-tunnel-speedtest.service; fi ;;
+        if [ -f cfip-data/openwrt-speedtest.log ]; then
+          tail -n 100 cfip-data/openwrt-speedtest.log
+        else
+          say '暂无 CF IP 测速日志。'
+        fi
+      else
+        journalctl --no-pager -n 100 -u x-tunnel-speedtest.service
+      fi ;;
     3)
+      if [ "$PLATFORM" = openwrt ]; then
+        show_service_log_openwrt telegram_speedtest_bot.py 'Telegram Bot'
+      else
+        journalctl --no-pager -n 100 -u x-tunnel-speedtest-bot.service
+      fi ;;
+    4)
       if [ "$PLATFORM" = openwrt ]; then
         /etc/init.d/x-tunnel status 2>/dev/null || true
         /etc/init.d/x-tunnel-speedtest-bot status 2>/dev/null || true
-      else systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true; fi ;;
+      else
+        systemctl --no-pager status x-tunnel.service x-tunnel-speedtest-bot.service || true
+      fi ;;
+    5)
+      say '检查测速 Python 模块；不会修改节点配置、网络路由或启动测速。'
+      if ! command -v python3 >/dev/null 2>&1; then
+        say 'ERROR: python3 未安装。'
+      elif (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest; print("CF测速模块导入正常")'); then
+        say '测速 Python 导入检查通过。'
+      else
+        say '测速 Python 导入检查失败。请查看上方 traceback。'
+      fi
+      if command -v ip >/dev/null 2>&1; then
+        say '检测测速器的实际 IPv4 出站模式（只读）：'
+        if ! (cd "$PROJECT_DIR" && python3 -c '
+from cfip_speedtest import DirectCandidateRoutes
+mode, mark = DirectCandidateRoutes.routing_mode("-4", "100")
+if mode == "native-direct":
+    DirectCandidateRoutes.verify_native_route("1.1.1.1", "-4")
+    print("OK: 普通默认路由；无需安装 ShellCrash，也不会添加测速策略路由")
+else:
+    print("OK: 已检测到 fwmark 策略路由（mark=%s）" % mark)
+'); then
+          say 'ERROR: 无法确认安全的直连路由，请检查上方错误。'
+        fi
+      else
+        say '提示：缺少 ip 命令，测速需要 ip-full。'
+      fi ;;
+    0) return;;
   esac
-}
-disable_timer_ow() {
-  [ -f /etc/crontabs/root ] || return 0
-  tmp="/etc/crontabs/root.xtunnel-menu.$$"
-  awk '
-    $0=="# x-tunnel-cf-ip-autotest daily speedtest" { skip=1; next }
-    skip==1 && /openwrt\/run-speedtest\.sh/ { skip=0; next }
-    { skip=0; print }
-  ' /etc/crontabs/root > "$tmp" || { rm -f "$tmp"; return 1; }
-  cat "$tmp" > /etc/crontabs/root
-  rm -f "$tmp"
-  [ -x /etc/init.d/cron ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 manage_timer() {
   root_only || return
   say "当前: $(timer_status)"
-  say '1) 开启每天 18:00 测速  2) 关闭自动测速  0) 返回'
+  if [ "$PLATFORM" = openwrt ]; then
+    say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
+  else
+    say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
+  fi
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
-      if [ "$PLATFORM" = openwrt ]; then sh "$PROJECT_DIR/install.sh" --enable-timer || say '启用失败。'
-      else systemctl enable --now x-tunnel-speedtest.timer || say '启用失败。'; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        [ -f "$TIMER_SCRIPT" ] || { say '找不到定时管理脚本，请先更新 openwrt 源码。'; return; }
+        saved=$(sh "$TIMER_SCRIPT" status) || { say '读取定时任务失败。'; return; }
+        default_time=$saved
+        [ "$default_time" != disabled ] || default_time=18:00
+        printf '每日测速时间（24小时制 HH:MM）[%s]: ' "$default_time"
+        IFS= read -r chosen || return
+        chosen=${chosen:-$default_time}
+        if ! sh "$TIMER_SCRIPT" validate "$chosen"; then
+          say '时间格式错误，请输入 00:00 至 23:59，例如 06:45、18:00、23:30。'
+          return
+        fi
+        if [ -f /etc/init.d/x-tunnel ] &&
+           (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest' >/dev/null 2>&1); then
+          sh "$TIMER_SCRIPT" enable "$chosen" || say '设置定时测速失败。'
+        else
+          say '首次启用需安装测速依赖；安装器可能重启 X-Tunnel 核心。'
+          sh "$PROJECT_DIR/install.sh" --enable-timer "--timer-at=$chosen" || say '启用失败。'
+        fi
+      else
+        [ -f "$SYSTEMD_TIMER_CLI" ] || { say 'Linux 定时管理脚本不存在，请先更新 main 分支。'; return; }
+        saved=$(python3 "$SYSTEMD_TIMER_CLI" saved) || return
+        printf '每日测速时间（24小时制 HH:MM）[%s]: ' "$saved"
+        IFS= read -r chosen || return
+        chosen=${chosen:-$saved}
+        python3 "$SYSTEMD_TIMER_CLI" validate "$chosen" || return
+        if [ -f /etc/systemd/system/x-tunnel-speedtest.service ]; then
+          python3 "$SYSTEMD_TIMER_CLI" enable "$chosen" || say '启用失败。'
+        else
+          say '首次启用将注册测速服务，可能重启 X-Tunnel 核心。'
+          sh "$PROJECT_DIR/install.sh" "--timer-at=$chosen" || say '安装/启用失败。'
+        fi
+      fi ;;
     2)
-      if [ "$PLATFORM" = openwrt ]; then disable_timer_ow && say '已关闭。'
-      else systemctl disable --now x-tunnel-speedtest.timer || say '关闭失败。'; fi ;;
+      if [ "$PLATFORM" = openwrt ]; then
+        [ -f "$TIMER_SCRIPT" ] || { say '找不到定时管理脚本，请先更新 openwrt 源码。'; return; }
+        sh "$TIMER_SCRIPT" disable || say '关闭失败。'
+      else
+        python3 "$SYSTEMD_TIMER_CLI" disable || say '关闭失败。'
+      fi ;;
+    0) return ;;
   esac
 }
 run_test() {
   root_only || return
-  say '注意：测速可能更新节点 CF IP，也会临时变更候选 IP 的直连路由。'
+  say '注意：测速可能更新节点 CF IP。旧式策略路由模式会临时添加候选 IP 路由；sing-box 网关模式不会修改这些路由。'
   ask '现在执行完整测速？' || return
   if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
   else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
@@ -166,15 +398,24 @@ show_menu() {
   say '=========================================================='
   say '                 X-Tunnel 管理菜单'
   say '=========================================================='
-  printf '平台: %s  项目路径: %s\n' "$PLATFORM" "$PROJECT_DIR"
+  if command -v opkg >/dev/null 2>&1; then manager=opkg
+  elif command -v apk >/dev/null 2>&1; then manager=apk
+  elif command -v apt-get >/dev/null 2>&1; then manager=apt
+  else manager='未检测到'; fi
+  printf '平台: %s  包管理: %s\n' "$PLATFORM" "$manager"
+  printf '项目路径: %s\n' "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
-  say ' 1) 安装/修复服务           2) GitHub 更新项目'
+  say ' 1) 安装/修复核心服务       2) GitHub 更新 Linux main 分支'
   say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
   say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
   say ' 7) Telegram Bot 服务管理  8) 查看日志'
   say ' 9) 定时测速管理          10) 立即运行完整测速'
   say '11) 配置检查              12) 卸载服务（保留配置）'
+  say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
+  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
+  say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
+  say '19) 已验证内核修复（OpenWrt 专用）'
   say ' 0) 退出'
 }
 while :; do
@@ -195,14 +436,51 @@ while :; do
     11)
       for file in x-tunnel.yaml speedtest-bot.env project.env; do
         if [ -f "$file" ]; then
-          if check_config "$file"; then say "$file: OK"; else say "$file: INVALID"; fi
+          if ! can_check_config "$file"; then say "$file: 等待安装依赖后校验"
+          elif check_config "$file"; then say "$file: OK"
+          else say "$file: INVALID"; fi
         else say "$file: 未配置"; fi
       done;;
+    13)
+      root_only || continue
+      prepare x-tunnel.yaml x-tunnel.example.yaml || continue
+      if grep -q 'example.com\|替换为' x-tunnel.yaml; then
+        say '请先在选项 5 配置真实节点，再安装 Telegram Bot。'
+        continue
+      fi
+      prepare speedtest-bot.env speedtest-bot.env.example || continue
+      prepare project.env project.env.example || continue
+      if grep -q '替换为' speedtest-bot.env; then
+        say '先填写 TG_TOKEN、TG_CHATID，并确认 project.env 中的 Telegram 代理地址。'
+        if ask '现在编辑 Telegram Bot 配置？'; then edit_file speedtest-bot.env speedtest-bot.env.example; fi
+      else
+        say '将按需安装 HTTPS/IDNA 和 ip-full 等组件，然后启动 Bot。'
+        if ask '安装/启用 Bot（将重启核心服务）？'; then
+          sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'
+        fi
+      fi;;
+    14)
+      root_only || continue
+      if [ "$PLATFORM" = systemd ]; then
+        systemctl disable --now x-tunnel-speedtest-bot.service || say 'Bot 停用失败。'
+        say 'X-Tunnel 核心与定时测速均未改变。'
+      elif [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
+        /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
+        /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
+        say 'Bot 已停止并取消开机自启；X-Tunnel 核心服务未重启。'
+      else
+        say 'Bot 服务尚未安装。'
+      fi;;
     12)
       root_only || continue
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
         sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
       fi;;
+    15) restart_service core;;
+    16) restart_service bot;;
+    17) stop_core_only;;
+    18) export_socks_providers;;
+    19) repair_kernel;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
