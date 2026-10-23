@@ -67,6 +67,7 @@ sh menu.sh
 ```
 
 - **6 / 7**：启动、停止、重启及开机自启管理。
+- **9**：每日 CF IP 定时测速，采用设备本地时间的 24 小时制 `HH:MM`。默认 **18:00**，直接回车采用默认时间；已有任务再次设置时默认显示上一次保存的时间。可以输入 `06:45`、`21:30`、`23:59`，修改会替换已有 cron 作业，不产生重复任务。测速依赖已安装时，修改定时时间不会重启 X-Tunnel 核心。
 - **15**：仅重启 X-Tunnel 核心与其节点，现有连接会短暂中断。
 - **16**：仅重启 Telegram Bot，不重启 X-Tunnel 节点。
 - **17**：只停止 X-Tunnel 核心和全部 SOCKS5 节点，Bot/定时测速不变。
@@ -186,7 +187,7 @@ X_TUNNEL_LOCAL_PROXY=http://192.168.68.21:7890
 | 核心（默认） | 菜单 **1** 或 `--core` | 安装 Python 核心依赖、X-Tunnel 内核、supervisor 与 Provider；不要求 Bot 凭据 |
 | 核心 + Bot | 菜单 **13** 或 `--with-bot` | 增加 Telegram Bot 和测速需要的 HTTPS/IDNA、`ip-full` 等依赖，并启动 Bot |
 | 测速依赖 | `--with-speedtest` | 安装测速依赖，不启用 Bot |
-| 定时测速 | 菜单 **9** 或 `--enable-timer` | 设置设备**本地时间 18:00** 的 cron 任务 |
+| 定时测速 | 菜单 **9**、`--enable-timer` 或 `--timer-at=HH:MM` | 设置设备**本地时间每日定时测速**；默认 18:00，可输入 24 小时制 HH:MM；保留其他 cron 作业 |
 | 关闭 Bot | 菜单 **14** 或 `--disable-bot` | 停用已安装 Bot；菜单选项 14 不重启核心，安装器的 `--disable-bot` 会重新安装/启动核心 |
 
 无交互终端（自动化脚本/远程任务）时，使用明确参数：
@@ -196,7 +197,11 @@ sh /tmp/xtunnel-openwrt.sh --core
 sh /tmp/xtunnel-openwrt.sh --with-bot
 sh /tmp/xtunnel-openwrt.sh --with-speedtest
 sh /tmp/xtunnel-openwrt.sh --enable-timer
+# 直接指定 24 小时制时间（例如每天 21:30）
+sh /tmp/xtunnel-openwrt.sh --timer-at=21:30
 ```
+
+定时任务由 `openwrt/speedtest-timer.sh` 管理。在 OpenWrt 上也可直接运行 `sh openwrt/speedtest-timer.sh status` 查看当前保存的时间、`sh openwrt/speedtest-timer.sh enable 06:45` 修改、`sh openwrt/speedtest-timer.sh disable` 关闭。时间严格要求 `00:00` 至 `23:59` 的两位小时、两位分钟；留空只在菜单里表示采用显示的默认值。菜单首次启用时若缺少测速依赖，可能通过安装器安装并重启 X-Tunnel 核心。
 
 这些命令会更新源码并执行安装；**不是只修改当前运行模式而不重启核心**。如果第一次生成的是示例节点配置，安装入口会提示编辑并退出，配置完成后再次执行。仅查看菜单可以运行 `x-t`，不会触发更新。
 
