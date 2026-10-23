@@ -1,0 +1,29 @@
+name: Validate Debian Ubuntu services
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check POSIX shells
+        run: |
+          sh -n install.sh menu.sh quick-install.sh uninstall.sh
+          sh -n openwrt/run-speedtest.sh
+      - name: Test shared CF speedtest and Linux scheduling
+        run: |
+          python3 -m pip install PyYAML
+          python3 -m compileall -q cfip_speedtest.py supervisor.py sync_singbox.py telegram_speedtest_bot.py platform_services.py project_settings.py tests systemd/speedtest-timer.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate systemd default calendar
+        run: systemd-analyze calendar '*-*-* 18:00:00'
