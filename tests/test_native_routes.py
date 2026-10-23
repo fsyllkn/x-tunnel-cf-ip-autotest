@@ -122,6 +122,58 @@ class NativeRoutesTest(unittest.TestCase):
                 self.assertEqual(guard.routes, [])
             check_uid.assert_not_called()
 
+    def test_unprivileged_lxc_tproxy_allows_native_root_cf_sockets(self):
+        """No local eBPF: TPROXY PREROUTING does not capture local OUTPUT."""
+        from cfip_speedtest import DirectCandidateRoutes
+
+        def fake_run(command, **kwargs):
+            if command == ["ip", "-4", "route", "show", "table", "53136"]:
+                return completed(command, "local default dev lo scope host\n")
+            if command == ["nft", "list", "table", "inet", "singbox_one_arm"]:
+                return completed(command, "table inet singbox_one_arm { }\n")
+            if command == ["systemd-detect-virt", "--container"]:
+                return completed(command, "lxc\n")
+            if command == ["nft", "list", "table", "inet", "singbox_lxc_guard"]:
+                return completed(command, "table inet singbox_lxc_guard { }\n")
+            if command == ["systemctl", "is-active", "--quiet", "sing-box.service"]:
+                return completed(command, "")
+            raise AssertionError("unexpected command: %r" % command)
+
+        lxc_config = (
+            '{"inbounds":[{"type":"mixed","listen":"127.0.0.1"},'
+            '{"type":"tproxy","tag":"lan-tproxy","listen_port":1536}]}'
+        )
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_run), \
+                mock.patch("cfip_speedtest.load_project_env"), \
+                mock.patch.dict("os.environ", {"X_TUNNEL_PROCESS_UID":"29002"}), \
+                mock.patch("cfip_speedtest.SINGBOX_GATEWAY_CONFIG") as cfg:
+            cfg.read_text.return_value = lxc_config
+            self.assertIsNone(DirectCandidateRoutes.verify_singbox_network_uid())
+
+    def test_lxc_no_guard_rejects_direct_speedtest(self):
+        from cfip_speedtest import DirectCandidateRoutes
+        def fake_run(command, **kwargs):
+            if command == ["ip", "-4", "route", "show", "table", "53136"]:
+                return completed(command, "local default dev lo scope host\n")
+            if command == ["nft", "list", "table", "inet", "singbox_one_arm"]:
+                return completed(command, "table inet singbox_one_arm { }\n")
+            if command == ["systemd-detect-virt", "--container"]:
+                return completed(command, "lxc\n")
+            if command == ["nft", "list", "table", "inet", "singbox_lxc_guard"]:
+                return completed(command, "", status=1)
+            if command == ["systemctl", "is-active", "--quiet", "sing-box.service"]:
+                return completed(command, "")
+            raise AssertionError("unexpected command: %r" % command)
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_run), \
+                mock.patch("cfip_speedtest.load_project_env"), \
+                mock.patch.dict("os.environ", {"X_TUNNEL_PROCESS_UID":"29002"}), \
+                mock.patch("cfip_speedtest.SINGBOX_GATEWAY_CONFIG") as cfg:
+            cfg.read_text.return_value = (
+                '{"inbounds":[{"type":"tproxy","tag":"lan-tproxy","listen_port":1536}]}'
+            )
+            with self.assertRaisesRegex(RuntimeError, "markers"):
+                DirectCandidateRoutes.verify_singbox_network_uid()
+
     def test_unknown_gateway_mark_is_still_rejected(self):
         rules = DEFAULT_IPV4_RULES + "15360: from all fwmark 0x1537 lookup 53136\n"
         with mock.patch("cfip_speedtest.subprocess.run", return_value=completed([], rules)):
