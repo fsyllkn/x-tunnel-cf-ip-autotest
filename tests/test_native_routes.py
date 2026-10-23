@@ -64,6 +64,7 @@ class NativeRoutesTest(unittest.TestCase):
 
         with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_ip), \
                 mock.patch.object(DirectCandidateRoutes, "cleanup_stale_routes"), \
+                mock.patch("cfip_speedtest.os.geteuid", return_value=0), \
                 mock.patch.object(
                     DirectCandidateRoutes, "verify_singbox_network_uid",
                     return_value=29002,
