@@ -79,6 +79,49 @@ class NativeRoutesTest(unittest.TestCase):
 
         self.assertFalse(any("add" in command or "del" in command for command in seen))
 
+    def test_host_only_local_ebpf_uses_nonroot_worker(self):
+        seen = []
+        def fake_ip(command, **kwargs):
+            seen.append(command)
+            if command == ["ip", "-4", "rule", "show"]:
+                return completed(command, DEFAULT_IPV4_RULES)
+            if command == ["ip", "-4", "route", "get", "1.1.1.1"]:
+                return completed(command, SAMPLE_LAN_ROUTE)
+            raise AssertionError("unexpected route mutation: %r" % command)
+
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_ip), \
+                mock.patch("cfip_speedtest.os.geteuid", return_value=0), \
+                mock.patch.object(DirectCandidateRoutes, "cleanup_stale_routes"), \
+                mock.patch.object(DirectCandidateRoutes, "active_singbox_local_ebpf",
+                                  return_value=True), \
+                mock.patch.object(DirectCandidateRoutes, "verify_singbox_network_uid",
+                                  return_value=29002) as check_uid:
+            with DirectCandidateRoutes(["1.1.1.1"]) as guard:
+                self.assertEqual(guard.network_uid, 29002)
+                self.assertEqual(guard.routes, [])
+            check_uid.assert_called_once_with(require_gateway=False)
+        self.assertEqual(len(seen), 2)
+
+    def test_host_only_native_route_without_singbox_needs_no_isolation(self):
+        def fake_ip(command, **kwargs):
+            if command == ["ip", "-4", "rule", "show"]:
+                return completed(command, DEFAULT_IPV4_RULES)
+            if command == ["ip", "-4", "route", "get", "1.1.1.1"]:
+                return completed(command, SAMPLE_LAN_ROUTE)
+            raise AssertionError("unexpected route mutation: %r" % command)
+
+        with mock.patch("cfip_speedtest.subprocess.run", side_effect=fake_ip), \
+                mock.patch("cfip_speedtest.os.geteuid", return_value=0), \
+                mock.patch.object(DirectCandidateRoutes, "cleanup_stale_routes"), \
+                mock.patch.object(DirectCandidateRoutes, "active_singbox_local_ebpf",
+                                  return_value=False), \
+                mock.patch.object(DirectCandidateRoutes, "verify_singbox_network_uid"
+                                  ) as check_uid:
+            with DirectCandidateRoutes(["1.1.1.1"]) as guard:
+                self.assertIsNone(guard.network_uid)
+                self.assertEqual(guard.routes, [])
+            check_uid.assert_not_called()
+
     def test_unknown_gateway_mark_is_still_rejected(self):
         rules = DEFAULT_IPV4_RULES + "15360: from all fwmark 0x1537 lookup 53136\n"
         with mock.patch("cfip_speedtest.subprocess.run", return_value=completed([], rules)):
