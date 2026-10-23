@@ -37,6 +37,7 @@ sudo sh install.sh                 # 核心 SOCKS5 + Provider（不强制 Bot）
 sudo sh install.sh --with-speedtest
 sudo sh install.sh --with-bot      # 需要先填 speedtest-bot.env
 sudo sh install.sh --disable-bot   # 不关闭核心服务
+sudo sh install.sh --repair-kernel  # 显式修复内核，预检通过并备份后替换
 \`\`\`
 
 首次安装会备份/保留私有配置，服务路径根据源码实际安装目录生成。建议系统级快捷入口 \`x-t\` 或兼容的 \`xtunnel-menu\`（通过一键安装入口创建）。
