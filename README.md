@@ -416,7 +416,9 @@ logread | grep -E 'Bot received|Speed-test bot|Telegram polling' | tail -n 30
 
 测速器已经支持 **native-direct**：当 `ip -4 rule show` 只有默认的 `local/main/default` 规则、`ip route get <候选IP>` 指向普通网口且没有异常策略路由时，测速直接沿现有默认路由发送请求，**不新增策略路由，不要求 ShellCrash 的表 100/101**。
 
-例如无 ShellCrash 的旁路由（`br-lan` → `192.168.68.1`）可直接测速；但路由检查**无法排除上游网关代理或隐藏的 nftables/iptables 重定向**。如果设备存在其他未知策略路由，程序将拒绝自动处理。遇到带已知 `fwmark` 的 ShellCrash 模式则沿用原有的临时策略路由逻辑。
+例如无 ShellCrash 的旁路由（`br-lan` → `192.168.68.1`）可直接测速；但路由检查**无法排除上游网关代理或隐藏的 nftables/iptables 重定向**。如果设备存在其他未知策略路由，程序仍会拒绝自动处理。遇到带已知 `fwmark` 的 ShellCrash 模式则沿用原有的临时策略路由逻辑。
+
+**与 reF1nd sing-box 单网口网关共存（新）：** 若 `ip -4 rule show` 包含本项目定义的 `15360: from all fwmark 0x1536 lookup 53136`，测速器将识别为 `singbox-gateway`，并验证 table 53136 的本地路由、`inet singbox_one_arm` 表和 `/opt/sing-box/config/config.json` 的 eBPF `local.exclude_uid`。CF RTT/下载测试在 X-Tunnel 专用非 root UID（默认 `29002`）的子进程中运行，以避开本机 eBPF 捕获；主控制进程仍以 root 管理配置、报告及锁。**不会增删 sing-box 的策略路由，也不会停止其内核**。若 UID 未被排除或网络状态不匹配，测速会安全拒绝执行，避免测得代理后的假成绩。运行中的 sing-box 是否已加载最新 UID 规则仍应以实机检查为准。
 
 在运行完整测速之前，可通过 `x-t` → **8 查看日志** → **4 测速环境自检** 进行只读检查；或者执行：
 
@@ -427,7 +429,7 @@ ip -4 route get 1.1.1.1
 python3 -c 'from cfip_speedtest import DirectCandidateRoutes; print(DirectCandidateRoutes.routing_mode("-4", "100"))'
 ```
 
-如显示 `('native-direct', None)`，表示**本机 Linux 路由规则**符合原生路由测速条件；不代表上级路由器一定直连公网。保持原有防泄漏原则，勿为通过测试而盲目修改防火墙和路由表。
+如显示 `('native-direct', None)`，表示**本机 Linux 路由规则**符合原生路由测速条件；如显示 `('singbox-gateway', None)`，表示识别到已知的 sing-box 单网口网关，测速期间会再核实非 root UID 的 eBPF 排除设置。不代表上级路由器一定直连公网。保持原有防泄漏原则，勿为通过测试而盲目修改防火墙和路由表。
 
 ### 核心安装报 `No module named 'urllib'`（Python 3.11 / core-only）
 
