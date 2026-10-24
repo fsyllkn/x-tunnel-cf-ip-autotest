@@ -59,6 +59,7 @@ class UnifiedConfigTest(unittest.TestCase):
             "X_TUNNEL_LISTEN_HOSTS=127.0.0.1,192.168.68.11\n"
             "X_TUNNEL_TARGET_MBPS=450\n"
             "X_TUNNEL_PROCESS_UID=29002\n"
+            "X_TUNNEL_PROCESS_GID=uid\n"
             "X_TUNNEL_PROVIDER_PATH=runtime/custom-provider.json\n"
             "X_TUNNEL_TG_PROXY=http://192.168.68.11:7890\n",
             encoding="utf-8",
@@ -88,6 +89,8 @@ class UnifiedConfigTest(unittest.TestCase):
         self.assertEqual(doc["settings"]["target_mbps"], 450)
         self.assertEqual(doc["settings"]["provider_path"], "runtime/custom-provider.json")
         self.assertEqual(doc["settings"]["process_uid"], 29002)
+        self.assertEqual(doc["settings"]["process_gid"], "uid")
+        self.assertEqual(project_settings.configured_process_gid(29002), 29002)
         self.assertEqual(doc["telegram"]["token"], "123456:private-token-test")
         self.assertEqual(doc["telegram"]["chat_id"], "123456789")
         self.assertEqual(project_settings.get_target_mbps(), 450)
