@@ -188,17 +188,17 @@ fi
     echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
 }
-if [ "$WITH_BOT" -eq 1 ] && [ ! -f "$PROJECT_DIR/speedtest-bot.env" ]; then
-    copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
-    echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun --with-bot." >&2
-    exit 1
-fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then
-    copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
-fi
+# Unify legacy .env files into x-tunnel.yaml BEFORE any systemd restart.
+# The migrator preserves YAML node rows and archives private originals.
 chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
-[ ! -f "$PROJECT_DIR/speedtest-bot.env" ] || chmod 0600 "$PROJECT_DIR/speedtest-bot.env"
-chmod 0644 "$PROJECT_DIR/project.env"
+python3 -c 'import yaml, fcntl' >/dev/null 2>&1 || {
+    echo "PyYAML and Python fcntl are required for safe YAML migration." >&2
+    exit 1
+}
+(cd "$PROJECT_DIR" && python3 migrate_config.py) || {
+    echo "Legacy YAML migration failed; existing services were NOT restarted." >&2
+    exit 1
+}
 
 # OpenWrt's python3-light may omit standard library IDNA codecs.
 # urllib's HTTPS proxy tunnel setup requires this codec.
@@ -221,27 +221,23 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     fi
     exit 1
 }
-PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' || {
+PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False); from project_settings import get_target_mbps, read_telegram_credentials; get_target_mbps(); read_telegram_credentials(require_chat_id=False)' || {
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
 if [ "$WITH_BOT" -eq 1 ]; then
-python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
-import pathlib
-import shlex
-import sys
-
-values = {}
-for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    key, separator, value = line.partition("=")
-    if separator:
-        parsed = shlex.split(value, comments=True)
-        values[key.strip()] = parsed[0] if parsed else ""
-if not values.get("TG_TOKEN") or "替换为" in values["TG_TOKEN"]:
-    raise SystemExit("Set a real TG_TOKEN in speedtest-bot.env first.")
-if not values.get("TG_CHATID", "").isdecimal():
-    raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
-PY
+    (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()') || {
+        echo "Configure telegram.token / telegram.chat_id in x-tunnel.yaml, mode 0600." >&2
+        exit 1
+    }
+fi
+BOT_WAS_RUNNING=0
+if [ "$DISABLE_BOT" -eq 0 ] && systemctl is-active --quiet x-tunnel-speedtest-bot.service 2>/dev/null; then
+    (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()') || {
+        echo "Existing Bot credentials are invalid in YAML; refusing restart." >&2
+        exit 1
+    }
+    BOT_WAS_RUNNING=1
 fi
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
 mkdir -p /run/lock
@@ -290,8 +286,14 @@ else
         mv -f "$temporary" "/etc/systemd/system/$unit"
     done
 
+    # Match root systemd controller GID to the canonical YAML mode.  Go
+    # children and CF network workers explicitly set their own primary GID.
+    resolved_gid=$(cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c '
+from project_settings import get_process_uid, configured_process_gid
+print(configured_process_gid(get_process_uid()))
+') || { echo "Invalid settings.process_gid; leaving services untouched." >&2; exit 1; }
     bypass_units="x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-single@.service"
-    if [ -r /etc/group ] && awk -F: '$1 == "shellcrash" && $3 == 7890 { found = 1 } END { exit !found }' /etc/group; then
+    if [ "$resolved_gid" = 7890 ]; then
         for unit in $bypass_units; do
             dropin_dir="/etc/systemd/system/$unit.d"
             temporary="$dropin_dir/shellcrash-bypass.conf.tmp"
@@ -301,13 +303,13 @@ else
             chmod 0644 "$temporary"
             mv -f "$temporary" "$dropin_dir/shellcrash-bypass.conf"
         done
-        printf 'Detected ShellCrash bypass group (GID 7890); configured X-Tunnel and speed-test services to use it.\n'
+        echo "Verified ShellCrash GID 7890 selected by YAML; managed systemd bypass enabled."
     else
         for unit in $bypass_units; do
             dropin="/etc/systemd/system/$unit.d/shellcrash-bypass.conf"
             rm -f "$dropin" "$dropin.tmp"
         done
-        printf 'ShellCrash bypass group (GID 7890) not found; X-Tunnel services keep the default group.\n'
+        echo "Systemd bypass remains disabled; YAML-selected primary GID=$resolved_gid."
     fi
 
     systemctl daemon-reload
@@ -315,6 +317,8 @@ else
     running_units="x-tunnel.service"
     if [ "$WITH_BOT" -eq 1 ]; then
         systemctl enable x-tunnel-speedtest-bot.service
+    fi
+    if [ "$WITH_BOT" -eq 1 ] || [ "$BOT_WAS_RUNNING" -eq 1 ]; then
         running_units="$running_units x-tunnel-speedtest-bot.service"
     fi
     for unit in $running_units; do
@@ -333,8 +337,17 @@ else
     fi
 
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
-        printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/local/bin/xtunnel-menu
-        chmod 0755 /usr/local/bin/xtunnel-menu
+        for launcher in /usr/local/bin/x-t /usr/local/bin/xtunnel-menu; do
+            if [ -L "$launcher" ]; then
+                echo "Refusing to overwrite launcher symlink $launcher" >&2; exit 1
+            fi
+            if [ -e "$launcher" ] &&
+               ! grep -Fq "$PROJECT_DIR/menu.sh" "$launcher" 2>/dev/null; then
+                echo "Launcher belongs to another program: $launcher" >&2; exit 1
+            fi
+            printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > "$launcher"
+            chmod 0755 "$launcher"
+        done
     fi
     printf 'Installed X-Tunnel services from %s\n' "$PROJECT_DIR"
     printf 'Status: systemctl status x-tunnel.service x-tunnel-speedtest-bot.service\n'
