@@ -73,14 +73,14 @@ class UIDIsolationTest(unittest.TestCase):
             group_file = Path(directory) / "group"
             with mock.patch.object(project_settings, "SHELLCRASH_GROUP_FILE", group_file):
                 # Standalone LXC and unrelated GID 7890 must preserve UID/GID.
-                group_file.write_text("root:x:0:\\nother:x:7890:\\n", encoding="utf-8")
+                group_file.write_text("root:x:0:\nother:x:7890:\n", encoding="utf-8")
                 with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
-                group_file.write_text("shellcrash:x:1234:\\n", encoding="utf-8")
+                group_file.write_text("shellcrash:x:1234:\n", encoding="utf-8")
                 with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
                 # Only the exact system group can supply ShellCrash's bypass GID.
-                group_file.write_text("root:x:0:\\nshellcrash:x:7890:\\n", encoding="utf-8")
+                group_file.write_text("root:x:0:\nshellcrash:x:7890:\n", encoding="utf-8")
                 with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 7890)
                 with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "uid"}):
@@ -91,7 +91,7 @@ class UIDIsolationTest(unittest.TestCase):
     def test_invalid_or_unverified_gid_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             group_file = Path(directory) / "group"
-            group_file.write_text("other:x:7890:\\n", encoding="utf-8")
+            group_file.write_text("other:x:7890:\n", encoding="utf-8")
             with mock.patch.object(project_settings, "SHELLCRASH_GROUP_FILE", group_file):
                 with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "7890"}):
                     with self.assertRaisesRegex(ValueError, "requires /etc/group"):
@@ -121,7 +121,7 @@ class UIDIsolationTest(unittest.TestCase):
             "process_gid": 7890,
         }
         entry = {"spec": spec, "process": None, "restart_at": None}
-        with mock.patch.object(supervisor, "child_workdir", return_value=Path("/tmp/test-node")), \\
+        with mock.patch.object(supervisor, "child_workdir", return_value=Path("/tmp/test-node")), \
              mock.patch.object(supervisor.subprocess, "Popen") as launch:
             launch.return_value.pid = 45678
             supervisor.start_child(entry)
@@ -133,13 +133,13 @@ class UIDIsolationTest(unittest.TestCase):
     def test_isolated_speedtest_worker_uses_the_same_primary_gid(self):
         fake_proc = mock.MagicMock()
         fake_proc.stdout = iter([
-            '{"type": "rtt", "ip": "1.1.1.1", "measurement": null}\\n',
+            '{"type": "rtt", "ip": "1.1.1.1", "measurement": null}\n',
         ])
         fake_proc.stderr.read.return_value = ""
         fake_proc.wait.return_value = 0
         fake_proc.poll.return_value = 0
-        with mock.patch("cfip_speedtest.os.geteuid", return_value=0), \\
-             mock.patch("cfip_speedtest.configured_process_gid", return_value=7890), \\
+        with mock.patch("cfip_speedtest.os.geteuid", return_value=0), \
+             mock.patch("cfip_speedtest.configured_process_gid", return_value=7890), \
              mock.patch("cfip_speedtest.subprocess.Popen", return_value=fake_proc) as launch:
             messages = list(cfip_speedtest.isolated_worker_messages(
                 29002, "rtt", {"candidates": ["1.1.1.1"], "port": 443, "tls": True, "workers": 1},
