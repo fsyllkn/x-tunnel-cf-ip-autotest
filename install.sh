@@ -312,6 +312,19 @@ if [ "$OPENWRT" -eq 1 ]; then
     }
     services="x-tunnel"
     [ "$WITH_BOT" -eq 0 ] || services="$services x-tunnel-speedtest-bot"
+    # An already running Bot holds the old Python module in memory. After
+    # migrating and archiving its .env file, restart that Bot so /topspeed and
+    # other commands write to the new YAML rather than recreating project.env.
+    BOT_WAS_RUNNING=0
+    if [ "$WITH_BOT" -eq 0 ] && [ "$DISABLE_BOT" -eq 0 ] &&
+       [ -f /etc/init.d/x-tunnel-speedtest-bot ] &&
+       /etc/init.d/x-tunnel-speedtest-bot status >/dev/null 2>&1; then
+        if ! (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()'); then
+            echo "[ERROR] A Bot is running, but unified YAML Bot credentials are invalid; not restarting services." >&2
+            exit 1
+        fi
+        BOT_WAS_RUNNING=1
+    fi
     for service in $services; do
         temporary="/etc/init.d/$service.tmp"
         sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$PROJECT_DIR/openwrt/$service.init" > "$temporary"
@@ -321,6 +334,12 @@ if [ "$OPENWRT" -eq 1 ]; then
         "/etc/init.d/$service" stop >/dev/null 2>&1 || true
         "/etc/init.d/$service" start
     done
+    if [ "$BOT_WAS_RUNNING" -eq 1 ]; then
+        /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
+        /etc/init.d/x-tunnel-speedtest-bot start ||
+            { echo "[ERROR] Failed to restart existing Bot with migrated YAML credentials." >&2; exit 1; }
+        echo "[OK] Existing Telegram Bot restarted with unified YAML settings."
+    fi
     if [ "$DISABLE_BOT" -eq 1 ] && [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
         /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
         /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
