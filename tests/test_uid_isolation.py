@@ -25,13 +25,7 @@ class UIDIsolationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
             cfg.write_text("settings:\n  process_uid: 29003\n", encoding="utf-8")
-            with mock.patch.object(Path, "read_text",
-                                   side_effect=lambda *a, **k: (
-                                       "root:x:0:0:root:/root:/bin/sh\n"
-                                       if str(a[0]) == "/etc/passwd"
-                                       else "settings:\n  process_uid: 29003\n"
-                                   )):
-                self.assertEqual(supervisor.configured_process_uid(), 29003)
+            self.assertEqual(supervisor.configured_process_uid(), 29003)
 
     def test_workdirs_are_per_node_and_private(self):
         with tempfile.TemporaryDirectory() as directory, \
