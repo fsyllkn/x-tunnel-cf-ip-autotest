@@ -28,12 +28,12 @@ sh /tmp/xtunnel-openwrt.sh
 
 ### 第一次安装：菜单操作顺序
 
-1. 选择 **5 编辑 X-Tunnel 节点**，填写真实节点地址、Token 和 CF IP。
+1. 选择 **3 编辑统一 YAML 配置**，填写真实节点地址、Token、CF IP，以及必要的监听地址。
 2. 选择 **1 安装/修复核心服务**。安装器按需补齐 Python 核心依赖，并启动 `x-tunnel` procd 服务。
-3. 需要 Telegram Bot 时，再选 **3 设置 Telegram Bot**，选 **4 编辑项目变量**设置实际可用的代理地址，最后选 **13 安装/启用 Telegram Bot**。
+3. 需要 Telegram Bot 时，在同一个 `x-tunnel.yaml` 的 `telegram` 和 `settings` 下填写凭据及代理，再选 **13 安装/启用 Telegram Bot**。
 4. 使用菜单 **8 查看日志**，或在 SSH 中查看服务状态。不要把“procd 运行中”直接等同于所有节点均已连通。
 
-不需要 Bot 的设备无需填写 `TG_TOKEN`、`TG_CHATID`，也无需安装 Bot/测速专用依赖。
+不需要 Bot 的设备可将 `telegram.token` 和 `telegram.chat_id` 留空，不需安装 Bot/测速专用依赖。
 
 ## 2. SSH 管理菜单与快捷入口
 
@@ -54,8 +54,8 @@ sh menu.sh
 
 ```text
  1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支
- 3) 设置 Telegram Bot      4) 编辑项目变量配置
- 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理
+ 3) 编辑统一 YAML 配置     4) 查看配置字段说明
+ 5) 备份统一 YAML 配置     6) X-Tunnel 服务管理
  7) Telegram Bot 服务管理  8) 查看日志
  9) 定时测速管理          10) 立即运行完整测速
 11) 配置检查              12) 卸载服务（保留配置）
@@ -76,7 +76,7 @@ sh menu.sh
 - **2 GitHub 更新**：下载最新代码并调用核心安装程序，**会重启核心服务**；不会自动替你重新配置或重启 Bot。
 - **14 关闭 Bot**：停止 Bot 并取消其开机自启，不重启 X-Tunnel 核心服务。
 
-配置编辑使用 `vi`；修改前会备份到 `cfip-data/config-backups/`，涉及密钥的文件使用 `0600` 权限。节点配置由 supervisor 监测后自动重载（通常在数秒内）；Bot/项目代理变量变更后请使用相应的服务重启选项。
+统一配置使用 `vi` 编辑 `x-tunnel.yaml`；修改前会备份到 `cfip-data/config-backups/`，统一 YAML（包含敏感 Token）及备份均使用 `0600` 权限。supervisor 会检测配置变化并协调需要变更的节点；Bot 的账号/代理修改后请单独重启 Bot。
 
 ## 3. 默认目录与安装文件
 
@@ -88,9 +88,8 @@ sh menu.sh
 ├── install.sh                  # 安装 procd 服务与按需依赖
 ├── menu.sh                     # x-t 调用的菜单
 ├── uninstall.sh                # 卸载服务
-├── x-tunnel.yaml               # 节点配置（私有，首次生成）
-├── speedtest-bot.env           # Bot 凭据（选配，首次使用时创建）
-├── project.env                 # 项目变量（首次生成）
+├── x-tunnel.yaml               # 唯一配置文件：节点、监听、测速与 Telegram（0600）
+├── migrate_config.py           # 一次性导入旧 project.env / speedtest-bot.env
 ├── supervisor.py               # 多节点守护进程
 ├── sync_singbox.py             # 本地 Provider 生成
 ├── telegram_speedtest_bot.py   # Bot 程序
@@ -100,7 +99,7 @@ sh menu.sh
 └── cfip-data/                  # 测速记录、日志与配置备份
 ```
 
-`runtime/`、`cfip-data/` 与 `speedtest-bot.env` 在首次下载时不一定存在，由相应安装或运行步骤生成。
+`runtime/` 和 `cfip-data/` 在首次下载时不一定存在，由安装或运行步骤生成。旧 `.env` 文件仅用于自动迁移，迁移完成后会移到权限受限的备份目录。
 
 系统级路径：
 
@@ -120,107 +119,89 @@ X_TUNNEL_INSTALL_DIR=/mnt/storage/x-tunnel-cf-ip-autotest sh /tmp/xtunnel-openwr
 
 一键安装下载的是**完整源码快照**，不是仅包含运行文件的精简包；按需安装指的是运行服务及其系统依赖。减少源码体积主要节省存储空间，不等于减少 X-Tunnel 内核的运行内存。
 
-## 4. 配置节点、Bot 与项目变量
+## 4. 唯一配置文件：`x-tunnel.yaml`
 
-### 4.1 节点配置：`x-tunnel.yaml`
+只需编辑 **`/overlay/x-tunnel-cf-ip-autotest/x-tunnel.yaml`** 一个文件。新建安装从 `x-tunnel.example.yaml` 复制，旧版 `project.env`、`speedtest-bot.env` 的参数会在安装/更新时自动迁移并以 `0600` 备份到 `cfip-data/config-backups/legacy-env-*/`。
 
-从 `x-tunnel.example.yaml` 创建。节点行格式为：
-
-```text
-名称|服务地址|token|cfip|连接数|端口
-```
-
-示例结构（以下是占位符，不可直接用于连接）：
+### 4.1 配置结构与示例
 
 ```yaml
 defaults:
-  token: "替换为真实密钥"
+  token: "替换为真实 X-Tunnel 节点密钥"
   cfip: "替换为可用的 Cloudflare IP"
   connections: 3
   ech: "cloudflare-ech.com"
   dns: "https://doh.pub/dns-query"
   listen_hosts:
     - "127.0.0.1"
+    # - "192.168.68.11"     # 可选：本机 LAN IP
   first_port: 32322
+
 max_nodes: 5
 nodes:
   - "香港|wss://example.com/about:443||||"
+
+settings:
+  provider_path: "runtime/x-tunnel-provider.json"
+  process_uid: 29002
+  local_proxy: "http://127.0.0.1:7890"
+  telegram_proxy: ""
+  target_mbps: 300
+
+telegram:
+  token: ""
+  chat_id: ""
 ```
 
-未填写的可选字段采用 `defaults` 中的值。具体连接格式以实际内核及可用配置为准。每个节点通常对应独立的 X-Tunnel 内核进程；默认 `connections: 3`，在低内存环境可**备份后实验性降低至 1**，并比较连接稳定性与吞吐。节点行中显式填写的连接数优先于默认值。
+节点行格式仍为 `名称|服务地址|token|cfip|连接数|端口`，空字段继承 `defaults`。`nodes` 的 **双引号字符串格式必须保留**，以便 CF 测速器定点修改其中的 IP 并保留原先的备用 IP。
 
-### 4.2 Telegram Bot：`speedtest-bot.env`
+`settings.process_uid` 默认 29002，仅用于 X-Tunnel Go 子进程。若同机使用 sing-box reF1nd eBPF，需要同步配置 `local.exclude_uid`；更换后重启 X-Tunnel 核心。`settings.target_mbps` 范围 100–10000，可通过 Telegram Bot 的 `/topspeed 500` 修改，修改会原子更新同一个 YAML，并通过独立文件锁避免覆盖并发 CF 测速写入。
 
-通过菜单选项 **3** 修改：
+`settings.local_proxy` 是 Telegram 默认 HTTP 代理（可改为实际可达的 LAN HTTP 代理）；`settings.telegram_proxy` 非空时优先尝试。它们**不是** SOCKS5 监听地址，也不会修改网关/路由。
+
+`telegram.token` / `telegram.chat_id` 是可选私有 Bot 凭据。如果不使用 Bot，可以留空；如启用 Bot，chat_id 必须为私聊数字 ID。**统一 YAML 含 WSS 密钥和 Bot Token，不要上传 GitHub、粘贴日志或让其他用户读取。** 请确保：
 
 ```sh
-TG_TOKEN='你的BotFather令牌'
-TG_CHATID='你的私聊数字ChatID'
+chmod 600 /overlay/x-tunnel-cf-ip-autotest/x-tunnel.yaml
 ```
 
-必须填写有效的 Token 与数字 Chat ID，选项 **13** 才能启用 Bot。不要公开此文件、推送到仓库或粘贴到日志中。
+### 4.2 SOCKS5 局域网监听
 
-### 4.3 项目变量：`project.env`
-
-通过菜单选项 **4** 修改。常用变量：
-
-| 变量 | 用途 |
-| --- | --- |
-| `X_TUNNEL_LOCAL_PROXY` | Telegram 请求使用的本地或局域网 HTTP 代理；模板默认 `http://127.0.0.1:7890` |
-| `X_TUNNEL_TG_PROXY` | 可选 Telegram 专用代理，优先于本地代理 |
-| `X_TUNNEL_PROVIDER_PATH` | Provider 输出位置，默认 `runtime/x-tunnel-provider.json` |
-| `X_TUNNEL_LISTEN_HOSTS` | SOCKS5 监听覆盖项（英文逗号分隔）；**留空时读取 `x-tunnel.yaml` 的 `defaults.listen_hosts`**，否则覆盖 YAML |
-| `X_TUNNEL_TARGET_MBPS` | CF IP 测速目标速度，默认 300 Mbps |
-
-例如 ShellCrash HTTP 代理在其他 LAN 设备的 `192.168.68.21:7890`：
-
-```sh
-X_TUNNEL_LOCAL_PROXY=http://192.168.68.21:7890
-```
-
-上述地址仅为示例，必须改成你的**实际可连通**代理。如果要让局域网其他设备访问 SOCKS5，还需正确设置监听 IP 和系统防火墙；请勿无意开放到 WAN。
-
-#### SOCKS5 局域网监听与 OpenWrt 排查
-
-`openwrt` 分支在 2026-10-24 修复了一个旧问题：安装时自动生成的 `project.env` 默认包含空的 `X_TUNNEL_LISTEN_HOSTS=`，旧版 `supervisor.py` 会因此忽略 `x-tunnel.yaml` 中的 `listen_hosts`，错误回退为 `127.0.0.1`。新版遵循以下顺序：
-
-1. `project.env` 中 **非空的** `X_TUNNEL_LISTEN_HOSTS` → 优先覆盖 YAML；
-2. `project.env` 中变量为空或缺失 → 使用 `x-tunnel.yaml` 的 `defaults.listen_hosts`；
-3. YAML 未指定 `listen_hosts` → 默认仅监听 `127.0.0.1`。
-
-建议只在 LAN 接口地址上绑定，例如设备实际 LAN IP 是 `192.168.68.11`：
+监听地址现在**只有一个来源**：`defaults.listen_hosts`。不再允许旧 `project.env` 或系统环境变量静默覆盖它：
 
 ```yaml
 defaults:
   listen_hosts:
     - "127.0.0.1"
-    - "192.168.68.11"
+    - "192.168.68.11"  # 替换成运行 X-Tunnel 的 OpenWrt 实际 LAN IP
   first_port: 32322
 ```
 
-此时 `project.env` 中 **`X_TUNNEL_LISTEN_HOSTS=` 保持为空即可**。或者明确写 `X_TUNNEL_LISTEN_HOSTS=127.0.0.1,192.168.68.11`，这会覆盖 YAML，不会合并。不要使用设备没有分配的 IP；不要在未限制防火墙前将无认证 SOCKS5 暴露到 WAN。
-
-OpenWrt 上安全地检查实际生效监听：
+LAN SOCKS5 默认无用户名密码，只在确认 LAN 防火墙限制了可信客户端后开启；不要将服务暴露到 WAN。网卡绑定成功并不代表能被其他设备访问；还要检查 OpenWrt 的 LAN zone、防火墙及实际端口。
 
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
-grep '^X_TUNNEL_LISTEN_HOSTS=' project.env
 python3 - <<'PY'
 from supervisor import read_specs
-for node in read_specs(check_port_availability=False):
-    print(node["name"], "SOCKS5 port", node["port"], "listen", node["listen_hosts"])
+for spec in read_specs(check_port_availability=False):
+    print(spec["name"], spec["listen_hosts"], spec["port"])
 PY
-ip -4 addr
-ss -lntp | grep ':32322'
+
+ss -lntp | grep 32322
+# 维护窗口内重启已有核心可使用 x-t 菜单 15
 ```
 
-如果代码刚更新，应在维护窗口重启 X-Tunnel procd 服务让其加载新版 Python 文件：
+局域网另一台设备测试：`curl --socks5-hostname 192.168.68.11:32322 https://api.ipify.org`。端口可能因占用被重新分配，应以日志和 `ss` 实际监听为准。
 
-```sh
-/etc/init.d/x-tunnel restart
-```
+### 4.3 旧版三个文件升级为一个
 
-从另一台 LAN 设备测试：`curl --socks5-hostname 192.168.68.11:32322 https://api.ipify.org`。若 `ss` 已显示 LAN IP 监听，但其他设备依然连接超时/被拒绝，进一步检查 OpenWrt 的 LAN zone input 规则、nftables、防火墙自定义规则与访问端设备之间的 IP 连通性；项目**不会自动打开所有 LAN/WAN 防火墙入站端口**。注意默认 SOCKS5 端口可能因冲突而自动重新分配，应以实际监听与 supervisor 日志为准。
+1. 更新 `openwrt` 分支代码（`x-t` 菜单选项 2）。
+2. 安装器在重启服务之前执行 `python3 migrate_config.py`：读取旧的 `project.env` 和 `speedtest-bot.env`，将 UID、Provider、代理、测速目标、Bot 凭据合入 YAML；如果 YAML 已有显式值，保留 YAML。旧 env 的非空监听地址只会在 YAML 仍为默认 localhost 时迁移。
+3. 安全写入 YAML、保留原始双引号节点行和注释；旧文件和原 YAML 保存为权限 `0600` 的备份，并从项目根目录移走，避免旧变量再次覆盖。
+4. 检查：`python3 migrate_config.py` 再次运行应只提示“一个 YAML 生效”；或使用 `x-t` 菜单 11 检查配置。迁移失败时不会覆盖运行配置、不会重启服务。
+
+迁移期间不展示 Token。**升级前仍建议自行备份 YAML**；旧版 `project.env.example` / `speedtest-bot.env.example` 不再作为运行配置模板使用。
+
 
 ## 5. 安装模式和资源占用
 
@@ -255,7 +236,7 @@ OpenWrt 分支的 `supervisor.py` **默认仅将 X-Tunnel Go 子进程以 UID/GI
 
 - 不要求 `adduser`，Linux 数字 UID 可以直接用于进程；安装前确认 29002 未被其他系统用户占用。
 - 每个节点以 `runtime/engines/<hash>-<port>/` 作为独立工作目录，归 UID 29002 所有，便于写入 GeoIP 等本地缓存且避免并发临时文件冲突。
-- 在 `project.env` 中可设置 `X_TUNNEL_PROCESS_UID=29002`（默认为 29002）；更换 UID 后需同步调整 sing-box `inbounds[].local.exclude_uid`，并重启 X-Tunnel 核心。
+- 在 `x-tunnel.yaml` 的 `settings.process_uid` 中设置专用 UID（默认为 29002）；更换 UID 后同步调整 sing-box `inbounds[].local.exclude_uid`，并重启 X-Tunnel 核心。
 - **仅更新源码不会自动替换正在运行的 root 内核进程**。安排维护窗口，使用 `x-t` 菜单 **15** 单独重启核心，Bot 无需重启。切换时 SOCKS5 连接会暂时中断。
 
 在 OpenWrt 检查子进程实际 UID：
@@ -295,7 +276,8 @@ x-t
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
 mkdir -p /overlay/x-tunnel-config-backup
-cp -p x-tunnel.yaml project.env /overlay/x-tunnel-config-backup/
+cp -p x-tunnel.yaml /overlay/x-tunnel-config-backup/
+[ ! -f project.env ] || cp -p project.env /overlay/x-tunnel-config-backup/
 [ ! -f speedtest-bot.env ] || cp -p speedtest-bot.env /overlay/x-tunnel-config-backup/
 git status --short
 git fetch origin openwrt
