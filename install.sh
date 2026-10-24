@@ -114,6 +114,12 @@ python3 -c 'import hashlib; hashlib.sha256(b"x-tunnel").hexdigest()' >/dev/null 
     echo "[ERROR] Core Python hashlib is unavailable after package installation." >&2
     exit 1
 }
+# Unified YAML uses flock to serialize Bot /topspeed and CF IP writes.
+python3 -c 'import fcntl' >/dev/null 2>&1 || {
+    echo "[ERROR] Python fcntl/flock module is unavailable; cannot safely merge YAML writes." >&2
+    echo "[ERROR] Use a Python build with fcntl (common on OpenWrt python3-light)." >&2
+    exit 1
+}
 python3 -c 'import yaml' >/dev/null 2>&1 || install_missing python3-yaml
 python3 -c 'import logging' >/dev/null 2>&1 || install_missing python3-logging
 if [ "$WITH_SPEEDTEST" -eq 1 ]; then
