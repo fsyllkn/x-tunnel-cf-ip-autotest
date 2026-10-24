@@ -401,16 +401,22 @@ show_menu() {
   printf '项目路径: %s\n' "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
-  say ' 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支'
-  say ' 3) 编辑统一 YAML 配置     4) 查看配置字段说明'
-  say ' 5) 备份统一 YAML 配置     6) X-Tunnel 服务管理'
-  say ' 7) Telegram Bot 服务管理  8) 查看日志'
-  say ' 9) 定时测速管理          10) 立即运行完整测速'
-  say '11) 配置检查              12) 卸载服务（保留配置）'
-  say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
-  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
-  say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
-  say '19) 安装已验证 Go 1.26 稳定内核'
+  say '【安装与常用】'
+  say ' 1) 安装/修复核心服务          2) 更新 GitHub openwrt 分支'
+  say ' 3) 重启 X-Tunnel             4) 查看日志'
+  say ' 5) X-Tunnel 服务管理         6) 停止 X-Tunnel 核心'
+  say '【配置管理】'
+  say ' 7) 编辑统一 YAML 配置         8) 配置检查'
+  say ' 9) 查看配置字段说明          10) 备份统一 YAML 配置'
+  say '【CF IP 测速】'
+  say '11) 立即运行完整测速          12) 定时测速管理'
+  say '【Telegram Bot】'
+  say '13) 安装/启用 Telegram Bot   14) Telegram Bot 服务管理'
+  say '15) 重启 Telegram Bot        16) 关闭 Bot 节省内存'
+  say '【导出与维护】'
+  say '17) 导出 Clash/V2Ray/SOCKS5 节点'
+  say '18) 安装已验证 Go 1.26 稳定内核'
+  say '19) 卸载服务（保留配置）'
   say ' 0) 退出'
 }
 while :; do
@@ -420,15 +426,12 @@ while :; do
   case "$option" in
     1) install_services;;
     2) update_code;;
-    3) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
-    4) config_help;;
-    5) backup_unified_config;;
-    6) manage_svc core;;
-    7) manage_svc bot;;
-    8) show_logs;;
-    9) manage_timer;;
-    10) run_test;;
-    11)
+    3) restart_service core;;
+    4) show_logs;;
+    5) manage_svc core;;
+    6) stop_core_only;;
+    7) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
+    8)
       if [ ! -f x-tunnel.yaml ]; then
         say 'x-tunnel.yaml: 未配置'
       elif ! can_check_config x-tunnel.yaml; then
@@ -438,11 +441,15 @@ while :; do
       else
         say 'x-tunnel.yaml: INVALID'
       fi;;
+    9) config_help;;
+    10) backup_unified_config;;
+    11) run_test;;
+    12) manage_timer;;
     13)
       root_only || continue
       prepare x-tunnel.yaml x-tunnel.example.yaml || continue
       if grep -q 'example.com\|替换为' x-tunnel.yaml; then
-        say '请先在选项 5 配置真实节点，再安装 Telegram Bot。'
+        say '请先在选项 7 编辑统一 YAML 配置并填写真实节点，再安装 Telegram Bot。'
         continue
       fi
       if ! python3 -c 'import telegram_speedtest_bot as b; b.read_config()' >/dev/null 2>&1; then
@@ -454,7 +461,9 @@ while :; do
           sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'
         fi
       fi;;
-    14)
+    14) manage_svc bot;;
+    15) restart_service bot;;
+    16)
       root_only || continue
       if [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
         /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
@@ -463,16 +472,13 @@ while :; do
       else
         say 'Bot 服务尚未安装。'
       fi;;
-    12)
+    17) export_socks_providers;;
+    18) repair_kernel;;
+    19)
       root_only || continue
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
         sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
       fi;;
-    15) restart_service core;;
-    16) restart_service bot;;
-    17) stop_core_only;;
-    18) export_socks_providers;;
-    19) repair_kernel;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
