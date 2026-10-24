@@ -48,7 +48,7 @@ else
     systemctl daemon-reload
 fi
 
-for launcher in /usr/bin/xtunnel-menu /usr/local/bin/xtunnel-menu; do
+for launcher in /usr/bin/xtunnel-menu /usr/local/bin/xtunnel-menu /usr/local/bin/x-t; do
     if [ -f "$launcher" ] && grep -Fq "$PROJECT_DIR/menu.sh" "$launcher"; then
         rm -f "$launcher"
     fi
