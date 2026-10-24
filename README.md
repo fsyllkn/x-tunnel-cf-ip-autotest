@@ -53,24 +53,26 @@ sh menu.sh
 当前菜单选项：
 
 ```text
-【安装与常用】
- 1) 安装/修复核心服务          2) 更新 GitHub openwrt 分支
- 3) 重启 X-Tunnel             4) 查看日志
- 5) X-Tunnel 服务管理         6) 停止 X-Tunnel 核心
-【配置管理】
- 7) 编辑统一 YAML 配置         8) 配置检查
- 9) 查看配置字段说明          10) 备份统一 YAML 配置
-【CF IP 测速】
-11) 立即运行完整测速          12) 定时测速管理
-【Telegram Bot】
-13) 安装/启用 Telegram Bot   14) Telegram Bot 服务管理
-15) 重启 Telegram Bot        16) 关闭 Bot 节省内存
-【导出与维护】
-17) 导出 Clash/V2Ray/SOCKS5 节点
-18) 安装已验证 Go 1.26 稳定内核
-19) 卸载服务（保留配置）
- 0) 退出
+  【安装与常用】
+   1) 安装/修复核心服务           2) 更新 GitHub openwrt 分支
+   3) 重启 X-Tunnel               4) 查看日志
+   5) X-Tunnel 服务管理           6) 停止 X-Tunnel 核心
+  【配置管理】
+   7) 编辑统一 YAML 配置          8) 配置检查
+   9) 查看配置字段说明           10) 备份统一 YAML 配置
+  【CF IP 测速】
+  11) 立即运行完整测速           12) 定时测速管理
+  【Telegram Bot】
+  13) 安装/启用 Telegram Bot     14) Telegram Bot 服务管理
+  15) 重启 Telegram Bot          16) 关闭 Bot 节省内存
+  【导出与维护】
+  17) 导出 Clash/V2Ray/SOCKS5 节点
+  18) 安装已验证 Go 1.26 稳定内核
+  19) 卸载服务（保留配置）
+   0) 退出
 ```
+
+排版说明：选项编号统一缩进，第二列按中文终端**实际显示宽度**对齐，不使用按字节/字符数补齐的动态列宽。建议终端宽度至少 65 列，以免自动换行。
 
 - **5 / 14**：分别管理 X-Tunnel 核心和 Telegram Bot 的启动、停止、重启、开机自启。
 - **3**：快速重启 X-Tunnel 核心及其节点，SOCKS5 连接会短暂中断。
