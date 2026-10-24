@@ -30,8 +30,7 @@ jobs:
         run: |
           python3 -m pip install PyYAML
           python3 -m compileall -q cfip_speedtest.py supervisor.py sync_singbox.py openwrt tests
-          python3 -m unittest discover -s tests -p 'test_multi_export.py' -v
-          python3 -m unittest discover -s tests -p 'test_native_routes.py' -v
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Ensure a non-listening candidate fails preflight
         run: |
           if python3 openwrt/kernel_smoke.py /bin/true; then
