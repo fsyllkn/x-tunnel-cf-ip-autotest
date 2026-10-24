@@ -1588,7 +1588,7 @@ def notification_text(report, error=None):
     elif reached:
         title = "✅ X-Tunnel CF测速完成"
     elif report.get("met_target_count_at_tier", False):
-        title = "⚠️ 测速达到速度目标，但部分节点缺少备用 IP"
+        title = "⚠️ 测速达到速度目标，但部分节点缺少本轮合格备用 IP"
     else:
         title = "⚠️ X-Tunnel CF测速完成，未满足目标数量/档位"
 
@@ -1620,7 +1620,7 @@ def notification_text(report, error=None):
                 match_type,
             ) + fallback_summary)
     if nodes_missing_fallback:
-        lines.append("备用 IP 不足（仅写入已测合格地址）：%s" % ", ".join(nodes_missing_fallback))
+        lines.append("本轮合格备用 IP 不足（若已测得新 IP，写入时最多从旧 IP 或 defaults.cfip 补位至 2 个；无新 IP 的节点保持不变）：%s" % ", ".join(nodes_missing_fallback))
     preserved_nodes = report.get("preserved_nodes", [])
     if preserved_nodes:
         reasons = report.get("preserved_node_reasons", {})
