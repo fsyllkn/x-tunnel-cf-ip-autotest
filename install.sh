@@ -248,22 +248,16 @@ PY
 fi
 
 [ -f "$PROJECT_DIR/x-tunnel.yaml" ] || {
-    echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
+    echo "Missing x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
 }
-if [ "$WITH_BOT" -eq 1 ]; then
- if [ ! -f "$PROJECT_DIR/speedtest-bot.env" ]; then
-  copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
-  echo 'Edit speedtest-bot.env then rerun --with-bot.' >&2
-  exit 1
- fi
- chmod 0600 "$PROJECT_DIR/speedtest-bot.env"
-fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then
-    copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
-fi
 chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
-chmod 0644 "$PROJECT_DIR/project.env"
+# Migrate legacy project.env and speedtest-bot.env before service restart.
+# x-tunnel.yaml remains the only active configuration; sensitive backups are 0600.
+if ! (cd "$PROJECT_DIR" && python3 migrate_config.py); then
+    echo "[ERROR] Legacy settings migration failed; existing services were not restarted." >&2
+    exit 1
+fi
 
 if [ "$WITH_SPEEDTEST" -eq 1 ]; then
  python3 -c 'import codecs, ssl, urllib.request; codecs.lookup("idna")' >/dev/null 2>&1 || { echo 'Missing HTTPS/IDNA modules.' >&2; exit 1; }
@@ -284,7 +278,7 @@ if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervis
     exit 1
 fi
 if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)'); then
-    echo "[ERROR] X-Tunnel configuration preflight failed; inspect x-tunnel.yaml and project.env." >&2
+    echo "[ERROR] X-Tunnel configuration preflight failed; inspect x-tunnel.yaml." >&2
     echo "[ERROR] Existing X-Tunnel service was not restarted." >&2
     exit 1
 fi
@@ -299,22 +293,11 @@ if [ "$WITH_SPEEDTEST" -eq 1 ]; then
     fi
 fi
 if [ "$WITH_BOT" -eq 1 ]; then
-python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
-import pathlib
-import shlex
-import sys
-
-values = {}
-for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    key, separator, value = line.partition("=")
-    if separator:
-        parsed = shlex.split(value, comments=True)
-        values[key.strip()] = parsed[0] if parsed else ""
-if not values.get("TG_TOKEN") or "替换为" in values["TG_TOKEN"]:
-    raise SystemExit("Set a real TG_TOKEN in speedtest-bot.env first.")
-if not values.get("TG_CHATID", "").isdecimal():
-    raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
-PY
+    if ! (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()'); then
+        echo "[ERROR] Configure telegram.token and telegram.chat_id in x-tunnel.yaml (0600)." >&2
+        echo "[ERROR] Existing X-Tunnel service was not restarted." >&2
+        exit 1
+    fi
 fi
 
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
