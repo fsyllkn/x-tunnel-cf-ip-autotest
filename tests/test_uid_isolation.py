@@ -1,4 +1,4 @@
-"""OpenWrt X-Tunnel kernel UID isolation regression tests.
+"""LXC systemd + unified YAML X-Tunnel UID/GID isolation regression tests.
 
 Run after python3-yaml is installed:
     python3 -m unittest discover -s tests -p 'test_uid_isolation.py'
@@ -18,12 +18,12 @@ import cfip_speedtest
 
 class UIDIsolationTest(unittest.TestCase):
     def test_default_and_overridden_uid(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch("project_settings.project_settings", return_value={}):
             self.assertEqual(supervisor.configured_process_uid(), 29002)
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "0"}):
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 0}):
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "29003"}), \
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \
              mock.patch.object(Path, "read_text", return_value="root:x:0:0:root:/root:/bin/sh\n"):
             self.assertEqual(supervisor.configured_process_uid(), 29003)
 
@@ -92,18 +92,18 @@ class UIDIsolationTest(unittest.TestCase):
             with mock.patch.object(project_settings, "SHELLCRASH_GROUP_FILE", group_file):
                 # Standalone LXC and unrelated GID 7890 must preserve UID/GID.
                 group_file.write_text("root:x:0:\nother:x:7890:\n", encoding="utf-8")
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
                 group_file.write_text("shellcrash:x:1234:\n", encoding="utf-8")
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
                 # Only the exact system group can supply ShellCrash's bypass GID.
                 group_file.write_text("root:x:0:\nshellcrash:x:7890:\n", encoding="utf-8")
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "auto"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 7890)
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "uid"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "uid"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "7890"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "7890"}):
                     self.assertEqual(project_settings.configured_process_gid(29002), 7890)
 
     def test_invalid_or_unverified_gid_fails_closed(self):
@@ -111,16 +111,16 @@ class UIDIsolationTest(unittest.TestCase):
             group_file = Path(directory) / "group"
             group_file.write_text("other:x:7890:\n", encoding="utf-8")
             with mock.patch.object(project_settings, "SHELLCRASH_GROUP_FILE", group_file):
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "7890"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "7890"}):
                     with self.assertRaisesRegex(ValueError, "requires /etc/group"):
                         project_settings.configured_process_gid(29002)
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "0"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "0"}):
                     with self.assertRaisesRegex(ValueError, "must be auto, uid, or 7890"):
                         project_settings.configured_process_gid(29002)
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "7890"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "7890"}):
                     with self.assertRaises(ValueError):
                         project_settings.configured_process_gid(0)
-                with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_GID": "auto"}):
+                with mock.patch("project_settings.project_settings", return_value={"process_gid": "auto"}):
                     group_file.unlink()
                     self.assertEqual(project_settings.configured_process_gid(29002), 29002)
 
