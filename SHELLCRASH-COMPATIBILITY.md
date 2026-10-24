@@ -10,14 +10,15 @@
 
 ## 新行为：只切换子进程主 GID
 
-`project.env` 提供：
+统一 `x-tunnel.yaml` 中的 `settings` 提供：
 
-```ini
-X_TUNNEL_PROCESS_UID=29002
-X_TUNNEL_PROCESS_GID=auto
+```yaml
+settings:
+  process_uid: 29002
+  process_gid: auto
 ```
 
-| `X_TUNNEL_PROCESS_GID` | Go 核心 / 隔离测速 worker 的主 GID | 适用场景 |
+| `settings.process_gid` | Go 核心 / 隔离测速 worker 的主 GID | 适用场景 |
 |---|---|---|
 | `auto`（默认） | `/etc/group` 中**精确**存在 `shellcrash:x:7890` 时使用 7890，否则使用 UID 值 | 推荐 |
 | `uid` | 始终使用 UID 值（如 29002） | 不想授予 ShellCrash 组权限 |
@@ -27,11 +28,11 @@ X_TUNNEL_PROCESS_GID=auto
 
 **重要：** `/etc/group` 中存在 shellcrash 组不等于 ShellCrash 正在运行，也不保证当前 iptables/nftables 规则确实存在 GID 7890 放行路径。若 ShellCrash 实际使用另一种防火墙后端、未启用该组豁免、或出站连接被其他透明代理接管，单靠设置 GID 不能解决；应以实际规则和连接测试为准。
 
-组文件发生变化后 supervisor 会重新检查节点身份并按需更新进程。通过 `project.env` 明确设置 `uid` 可以随时关闭此兼容行为；修改配置后请重启 `x-tunnel.service`。
+组文件发生变化后 supervisor 会重新检查节点身份并按需更新进程。通过统一 YAML 的 `settings.process_gid: uid` 明确设置 `uid` 可以随时关闭此兼容行为；修改配置后请重启 `x-tunnel.service`。
 
 ## systemd 服务级 Group 与测速
 
-安装器保留原有检测：发现准确的 ShellCrash GID 7890 时，为 `x-tunnel.service`、`x-tunnel-speedtest.service`、`x-tunnel-speedtest-single@.service` 写入项目自身的 `shellcrash-bypass.conf`。没有该组时，仅移除项目自身管理的同名 drop-in。管理/root 测速进程因此可使用相应主 GID，但独立 Go 核心和隔离测速子进程仍会显式选择上述身份。若 ShellCrash 是在 X-Tunnel 安装以后添加的，应重新运行安装器以刷新 **systemd 的 Group 设置**。
+安装器只有在统一 YAML 的 `settings.process_gid` 实际选择 7890 时，才为 `x-tunnel.service`、`x-tunnel-speedtest.service`、`x-tunnel-speedtest-single@.service` 写入项目自身的 `shellcrash-bypass.conf`。没有该组或设置 `process_gid: uid` 时，仅移除项目自身管理的同名 drop-in。管理/root 测速进程因此可使用相应主 GID，但独立 Go 核心和隔离测速子进程仍会显式选择上述身份。若 ShellCrash 是在 X-Tunnel 安装以后添加的，应重新运行安装器以刷新 **systemd 的 Group 设置**。
 
 在 ShellCrash + 无 eBPF 的模式下，CF 测速可能由 root 控制进程直接建立连接；从交互式 shell 手动运行 `python3 cfip_speedtest.py` **不会自动继承 systemd 的 Group=7890**。这类场景应优先使用已正确配置 GID 的测速 service，并验证实际的 ShellCrash 放行规则及测速出口，不能将策略路由验证视为网关一定直连的证明。
 
