@@ -390,6 +390,8 @@ run_test() {
   if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
   else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
 }
+# Menu labels are padded by terminal cell width (CJK=2), not byte count.
+# Keep the second label at cell 33; do not format two columns with printf %-Ns.
 show_menu() {
   say '=========================================================='
   say '                 X-Tunnel 管理菜单'
@@ -401,23 +403,23 @@ show_menu() {
   printf '项目路径: %s\n' "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
-  say '【安装与常用】'
-  say ' 1) 安装/修复核心服务          2) 更新 GitHub openwrt 分支'
-  say ' 3) 重启 X-Tunnel             4) 查看日志'
-  say ' 5) X-Tunnel 服务管理         6) 停止 X-Tunnel 核心'
-  say '【配置管理】'
-  say ' 7) 编辑统一 YAML 配置         8) 配置检查'
-  say ' 9) 查看配置字段说明          10) 备份统一 YAML 配置'
-  say '【CF IP 测速】'
-  say '11) 立即运行完整测速          12) 定时测速管理'
-  say '【Telegram Bot】'
-  say '13) 安装/启用 Telegram Bot   14) Telegram Bot 服务管理'
-  say '15) 重启 Telegram Bot        16) 关闭 Bot 节省内存'
-  say '【导出与维护】'
-  say '17) 导出 Clash/V2Ray/SOCKS5 节点'
-  say '18) 安装已验证 Go 1.26 稳定内核'
-  say '19) 卸载服务（保留配置）'
-  say ' 0) 退出'
+  say '  【安装与常用】'
+  say '   1) 安装/修复核心服务           2) 更新 GitHub openwrt 分支'
+  say '   3) 重启 X-Tunnel               4) 查看日志'
+  say '   5) X-Tunnel 服务管理           6) 停止 X-Tunnel 核心'
+  say '  【配置管理】'
+  say '   7) 编辑统一 YAML 配置          8) 配置检查'
+  say '   9) 查看配置字段说明           10) 备份统一 YAML 配置'
+  say '  【CF IP 测速】'
+  say '  11) 立即运行完整测速           12) 定时测速管理'
+  say '  【Telegram Bot】'
+  say '  13) 安装/启用 Telegram Bot     14) Telegram Bot 服务管理'
+  say '  15) 重启 Telegram Bot          16) 关闭 Bot 节省内存'
+  say '  【导出与维护】'
+  say '  17) 导出 Clash/V2Ray/SOCKS5 节点'
+  say '  18) 安装已验证 Go 1.26 稳定内核'
+  say '  19) 卸载服务（保留配置）'
+  say '   0) 退出'
 }
 while :; do
   show_menu
