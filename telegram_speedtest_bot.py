@@ -5,8 +5,6 @@ import ipaddress
 import json
 import os
 import re
-import shlex
-import stat
 import subprocess
 import sys
 import time
@@ -20,12 +18,12 @@ from project_settings import (
     load_project_env,
     set_target_mbps,
     telegram_proxy_chain,
+    read_telegram_credentials,
 )
 from platform_services import is_openwrt, is_systemd, launch_speedtest as launch_openwrt_speedtest, restart_xtunnel as restart_openwrt_xtunnel, speedtest_running
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = Path(os.environ.get("X_TUNNEL_BOT_CONFIG", str(BASE_DIR / "speedtest-bot.env")))
 BOT_LOCK_FILE = Path("/run/lock/x-tunnel-speedtest-bot.lock")
 SPEEDTEST_SERVICE = "x-tunnel-speedtest.service"
 SINGLE_SPEEDTEST_TEMPLATE = "x-tunnel-speedtest-single@.service"
@@ -33,26 +31,9 @@ BOT_USERNAME = "cfipspdtest_bot"
 
 
 def read_config(require_chat_id=True):
-    values = {}
-    for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", line)
-        if not match:
-            continue
-        try:
-            parsed = shlex.split(match.group(2), comments=True)
-        except ValueError:
-            continue
-        values[match.group(1)] = parsed[0] if parsed else ""
-    token = values.get("TG_TOKEN", "")
-    chat_id = values.get("TG_CHATID", "")
+    token, chat_id = read_telegram_credentials(require_chat_id=require_chat_id)
     if not token:
-        raise ValueError("TG_TOKEN is missing from %s" % CONFIG_FILE)
-    if require_chat_id and not chat_id:
-        raise ValueError("TG_CHATID is missing from %s" % CONFIG_FILE)
-    if chat_id and not chat_id.isdecimal():
-        raise ValueError("TG_CHATID must be the numeric ID of your private chat")
-    if stat.S_IMODE(CONFIG_FILE.stat().st_mode) & 0o077:
-        raise PermissionError("%s must have mode 0600 or stricter" % CONFIG_FILE)
+        raise ValueError("telegram.token is missing from x-tunnel.yaml")
     return token, chat_id
 
 
