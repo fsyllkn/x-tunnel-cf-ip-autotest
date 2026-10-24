@@ -3,6 +3,7 @@
 Read-only checks; never start services or change network configuration.
 """
 import re
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -64,6 +65,33 @@ class OpenWrtMenuLayoutTest(unittest.TestCase):
         for number, marker in EXPECTED_ACTIONS.items():
             with self.subTest(option=number):
                 self.assertIn(marker, actions[number])
+
+    def test_aligned_two_column_menu_for_cjk_terminals(self):
+        # Static spaces count terminal cells, NOT Python string characters.
+        # Chinese ideographs are wide; right-hand descriptions must begin
+        # at the same terminal-cell position on every paired menu row.
+        screen = parts()[0]
+        rows = re.findall(r"(?m)^\\s*say '([^']*)'\\s*$", screen)
+        menu_entries = 0
+        paired_entries = 0
+        def cells(value):
+            return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F")
+                       else 1 for ch in value)
+        for line in rows:
+            if line.startswith("  【"):
+                self.assertEqual(line[:2], "  ")
+                continue
+            if not re.match(r"^\\s*\\d{1,2}\\) ", line):
+                continue
+            choices = list(re.finditer(r"\\d{1,2}\\) ", line))
+            menu_entries += len(choices)
+            self.assertEqual(cells(line[:choices[0].end()]), 6)
+            self.assertLessEqual(cells(line), 61)
+            if len(choices) == 2:
+                paired_entries += 1
+                self.assertEqual(cells(line[:choices[1].end()]), 37)
+        self.assertGreaterEqual(menu_entries, 20)
+        self.assertGreaterEqual(paired_entries, 6)
 
     def test_core_restart_and_logs_are_three_and_four(self):
         _, _, actions, _ = parts()
