@@ -10,7 +10,6 @@ import json
 import os
 import random
 import re
-import shlex
 import signal
 import socket
 import ssl
@@ -21,8 +20,9 @@ import threading
 import time
 from pathlib import Path
 from project_settings import (
-    build_speed_tiers, configured_process_gid, get_target_mbps,
-    load_project_env, telegram_proxy_chain,
+    build_speed_tiers, configured_process_gid, config_lock,
+    get_process_uid, get_target_mbps, load_project_env,
+    telegram_proxy_chain, read_telegram_credentials,
 )
 
 
@@ -37,10 +37,6 @@ SINGBOX_GATEWAY_RULE = re.compile(
     re.I,
 )
 REPORT_FILE = DATA_DIR / "latest-results.json"
-BOT_CONFIG_FILE = Path(os.environ.get(
-    "X_TUNNEL_BOT_CONFIG",
-    str(BASE_DIR / "speedtest-bot.env"),
-))
 URL_LIST = "https://www.baipiao.eu.org/cloudflare/url"
 IP_LIST_URLS = {
     4: "https://www.baipiao.eu.org/cloudflare/ips-v4",
@@ -499,8 +495,7 @@ def isolated_worker_messages(uid, action, payload):
     """Stream IPC from an eBPF-exempt UID without changing kernel routing tables."""
     if os.geteuid() != 0 or uid <= 0:
         raise RuntimeError("isolated CF tests require a root controller and non-root worker")
-    # The subprocess primary GID overrides systemd's Group= setting. Keep
-    # ShellCrash's verified socket bypass for isolated RTT/download workers.
+    # Keep the same verified primary GID as the X-Tunnel Go children.
     gid = configured_process_gid(uid)
     process = subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--network-worker", action],
@@ -664,12 +659,8 @@ class DirectCandidateRoutes:
             )
             if nft.returncode:
                 raise RuntimeError("sing-box single-NIC nftables table is not active")
-        load_project_env()
-        raw_uid = os.environ.get("X_TUNNEL_PROCESS_UID", "29002")
-        try:
-            uid = int(raw_uid)
-        except ValueError as error:
-            raise RuntimeError("invalid X_TUNNEL_PROCESS_UID") from error
+        # Canonical source is x-tunnel.yaml, never legacy project.env.
+        uid = get_process_uid()
         if uid < 1000:
             raise RuntimeError("CF worker needs an isolated non-root X-Tunnel UID")
         try:
@@ -944,13 +935,10 @@ class DirectCandidateRoutes:
 class TelegramProgress:
     def __init__(self):
         load_project_env()
-        credentials = {}
         try:
-            credentials = read_shell_config_values(BOT_CONFIG_FILE, {"TG_TOKEN", "TG_CHATID"})
+            self.token, self.chat_id = read_telegram_credentials(require_chat_id=False)
         except (OSError, ValueError):
-            credentials = {}
-        self.token = credentials.get("TG_TOKEN", "")
-        self.chat_id = credentials.get("TG_CHATID", "")
+            self.token, self.chat_id = "", ""
         self.message_id = None
         self.proxy = None
         self.proxies = telegram_proxy_chain()
@@ -1028,80 +1016,115 @@ class TelegramProgress:
             for chunk in chunks[1:]:
                 self._request("sendMessage", chunk, parse_mode="HTML")
 
-def apply_ips(assignments):
-    import yaml
-
-    content = CONFIG_FILE.read_text(encoding="utf-8")
-    document = yaml.safe_load(content) or {}
-    defaults = document.get("defaults") or {}
-    default_ips = [
-        value.strip()
-        for value in str(defaults.get("cfip", "")).split(",")
-        if value.strip()
+def _cf_ip_values(value):
+    """Split either a comma-delimited string or a list of comma-delimited IPs."""
+    elements = value if isinstance(value, (list, tuple)) else [value]
+    return [
+        address
+        for item in elements if item is not None
+        for address in (part.strip() for part in str(item).split(","))
+        if address
     ]
-    known_names = {
-        row.split("|", 1)[0].strip()
-        for row in document.get("nodes", [])
-        if isinstance(row, str) and "|" in row
-    }
-    missing = set(assignments) - known_names
-    if missing:
-        raise ValueError("node(s) not found in x-tunnel.yaml: %s" % ", ".join(sorted(missing)))
 
-    updated_lines = []
-    changed = False
-    for line in content.splitlines(keepends=True):
-        match = re.fullmatch(r'(\s*-\s*)((?:"(?:\\.|[^"\\])*"))(\s*(?:#.*)?\s*)(\r?\n)?', line)
-        if not match:
-            updated_lines.append(line)
-            continue
-        row = json.loads(match.group(2))
-        fields = [field.strip() for field in row.split("|")]
-        if fields[0] not in assignments:
-            updated_lines.append(line)
-            continue
-        while len(fields) < 4:
-            fields.append("")
-        assigned_ips = assignments[fields[0]]
-        if isinstance(assigned_ips, (list, tuple)):
-            assigned_ips = [str(value).strip() for value in assigned_ips if str(value).strip()]
-        else:
-            assigned_ips = [str(assigned_ips).strip()] if str(assigned_ips).strip() else []
-        existing_ips = [
-            value.strip()
-            for value in fields[3].split(",")
-            if value.strip()
-        ]
-        # Keep the known configuration as fallback: HTTP speed alone does not
-        # prove that a CF edge will carry this node's WebSocket tunnel reliably.
-        fields[3] = ",".join(dict.fromkeys(assigned_ips + existing_ips + default_ips))
-        new_row = "|".join(fields)
-        newline = match.group(4) or ""
-        updated_lines.append(
-            match.group(1) + json.dumps(new_row, ensure_ascii=False) + match.group(3) + newline
-        )
-        changed = True
 
-    if not changed:
-        raise ValueError("could not locate quoted node rows in x-tunnel.yaml")
-    mode = CONFIG_FILE.stat().st_mode & 0o777
-    descriptor, temporary = tempfile.mkstemp(prefix=".x-tunnel-config-", dir=CONFIG_FILE.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            output.write("".join(updated_lines))
-        os.chmod(temporary, mode)
-        os.replace(temporary, CONFIG_FILE)
-    except Exception:
+def apply_ips(assignments):
+    """Replace each matched node's CF IP list with at most two addresses.
+
+    Use up to two newly measured addresses first; only a shortage can be
+    filled from the node's existing list and then defaults.cfip. A node with
+    no new qualifying addresses remains byte-for-byte unchanged.
+    """
+    # Shared lock with Bot /topspeed and migration prevents lost CF IP updates.
+    with config_lock():
+        import yaml
+
+        if not assignments:
+            return False
+        content = CONFIG_FILE.read_text(encoding="utf-8")
+        document = yaml.safe_load(content) or {}
+        defaults = document.get("defaults") or {}
+        default_ips = _cf_ip_values(defaults.get("cfip", ""))
+        known_names = {
+            row.split("|", 1)[0].strip()
+            for row in document.get("nodes", [])
+            if isinstance(row, str) and "|" in row
+        }
+        missing = set(assignments) - known_names
+        if missing:
+            raise ValueError("node(s) not found in x-tunnel.yaml: %s" % ", ".join(sorted(missing)))
+
+        updated_lines = []
+        matched_names = set()
+        changed_nodes = {}
+        for line in content.splitlines(keepends=True):
+            match = re.fullmatch(r'(\s*-\s*)((?:"(?:\\.|[^"\\])*"))(\s*(?:#.*)?\s*)(\r?\n)?', line)
+            if not match:
+                updated_lines.append(line)
+                continue
+            row = json.loads(match.group(2))
+            fields = [field.strip() for field in row.split("|")]
+            if fields[0] not in assignments:
+                updated_lines.append(line)
+                continue
+            name = fields[0]
+            matched_names.add(name)
+            newly_measured = list(dict.fromkeys(_cf_ip_values(assignments[name])))[:MAX_NODE_CF_IPS]
+            if not newly_measured:
+                # No qualifying result for this node: preserve its old list
+                # and original YAML line without injecting defaults.cfip.
+                updated_lines.append(line)
+                continue
+
+            while len(fields) < 4:
+                fields.append("")
+            existing_ips = _cf_ip_values(fields[3])
+            effective_ips = newly_measured[:]
+            for fallback in existing_ips + default_ips:
+                if len(effective_ips) >= MAX_NODE_CF_IPS:
+                    break
+                if fallback not in effective_ips:
+                    effective_ips.append(fallback)
+            fields[3] = ",".join(effective_ips)
+            new_row = "|".join(fields)
+            if new_row == row:
+                updated_lines.append(line)
+                continue
+            newline = match.group(4) or ""
+            updated_lines.append(
+                match.group(1) + json.dumps(new_row, ensure_ascii=False) + match.group(3) + newline
+            )
+            changed_nodes[name] = (len(newly_measured), len(effective_ips) - len(newly_measured))
+
+        unparsed = set(assignments) - matched_names
+        if unparsed:
+            raise ValueError("could not locate double-quoted node row(s) in x-tunnel.yaml: %s" %
+                             ", ".join(sorted(unparsed)))
+        if not changed_nodes:
+            return False
+
+        # Preserve the atomic, permission-restricted YAML update. Unchanged
+        # files are never rewritten, preventing unnecessary supervisor restarts.
+        descriptor, temporary = tempfile.mkstemp(prefix=".x-tunnel-config-", dir=CONFIG_FILE.parent)
         try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-    for node_name in assignments:
-        print(
-            "updated %s CF IP in x-tunnel.yaml with configured fallback IPs; "
-            "x-tunnel will reload automatically" % node_name
-        )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write("".join(updated_lines))
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, CONFIG_FILE)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        for name, (fresh, fallback) in changed_nodes.items():
+            print(
+                "updated %s CF IP in x-tunnel.yaml: %d measured + %d fallback "
+                "(maximum %d); x-tunnel will reload automatically" %
+                (name, fresh, fallback, MAX_NODE_CF_IPS)
+            )
+        return True
 
 
 def configured_node_names():
@@ -1583,20 +1606,6 @@ def save_report(report):
     return report_path
 
 
-def read_shell_config_values(path, keys):
-    values = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", line)
-        if not match or match.group(1) not in keys:
-            continue
-        try:
-            parsed = shlex.split(match.group(2), comments=True)
-        except ValueError:
-            continue
-        values[match.group(1)] = parsed[0] if parsed else ""
-    return values
-
-
 def notification_text(report, error=None):
     if not report:
         return "❌ X-Tunnel CF测速失败\n原因：%s" % (error or "未生成测速报告")
@@ -1652,7 +1661,7 @@ def notification_text(report, error=None):
     elif reached:
         title = "✅ X-Tunnel CF测速完成"
     elif report.get("met_target_count_at_tier", False):
-        title = "⚠️ 测速达到速度目标，但部分节点缺少备用 IP"
+        title = "⚠️ 测速达到速度目标，但部分节点缺少本轮合格备用 IP"
     else:
         title = "⚠️ X-Tunnel CF测速完成，未满足目标数量/档位"
 
@@ -1684,7 +1693,7 @@ def notification_text(report, error=None):
                 match_type,
             ) + fallback_summary)
     if nodes_missing_fallback:
-        lines.append("备用 IP 不足（仅写入已测合格地址）：%s" % ", ".join(nodes_missing_fallback))
+        lines.append("本轮合格备用 IP 不足（若已测得新 IP，写入时最多从旧 IP 或 defaults.cfip 补位至 2 个；无新 IP 的节点保持不变）：%s" % ", ".join(nodes_missing_fallback))
     preserved_nodes = report.get("preserved_nodes", [])
     if preserved_nodes:
         reasons = report.get("preserved_node_reasons", {})
