@@ -86,7 +86,8 @@ if [ ! -f "$PROJECT_DIR/x-tunnel.yaml" ]; then
  (umask 077; cp "$PROJECT_DIR/x-tunnel.example.yaml" "$PROJECT_DIR/x-tunnel.yaml")
  created=1
 fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env"; fi
+# project.env and speedtest-bot.env are deprecated; install.sh migrates
+# existing files into the single protected x-tunnel.yaml.
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
 # Make the menu available even before the core service has been installed.
 if [ -f "$PROJECT_DIR/menu.sh" ]; then
