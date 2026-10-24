@@ -413,14 +413,6 @@ show_menu() {
   say '19) 安装已验证 Go 1.26 稳定内核'
   say ' 0) 退出'
 }
-# Auto-migrate old variable files on upgrade without restarting services.
-if [ -f "$PROJECT_DIR/x-tunnel.yaml" ] &&
-   { [ -f "$PROJECT_DIR/project.env" ] || [ -f "$PROJECT_DIR/speedtest-bot.env" ]; } &&
-   command -v python3 >/dev/null 2>&1 &&
-   python3 -c 'import yaml, fcntl' >/dev/null 2>&1; then
-  python3 "$PROJECT_DIR/migrate_config.py" || say '[WARN] 旧配置迁移失败，先检查错误再重启服务。'
-fi
-
 while :; do
   show_menu
   printf '\n请输入选项: '
