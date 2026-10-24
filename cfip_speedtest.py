@@ -20,7 +20,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from project_settings import build_speed_tiers, get_target_mbps, load_project_env, telegram_proxy_chain
+from project_settings import (
+    build_speed_tiers, configured_process_gid, get_target_mbps,
+    load_project_env, telegram_proxy_chain,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -496,6 +499,9 @@ def isolated_worker_messages(uid, action, payload):
     """Stream IPC from an eBPF-exempt UID without changing kernel routing tables."""
     if os.geteuid() != 0 or uid <= 0:
         raise RuntimeError("isolated CF tests require a root controller and non-root worker")
+    # The subprocess primary GID overrides systemd's Group= setting. Keep
+    # ShellCrash's verified socket bypass for isolated RTT/download workers.
+    gid = configured_process_gid(uid)
     process = subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--network-worker", action],
         cwd=str(BASE_DIR),
@@ -504,7 +510,7 @@ def isolated_worker_messages(uid, action, payload):
         stderr=subprocess.PIPE,
         text=True,
         user=uid,
-        group=uid,
+        group=gid,
         extra_groups=(),
     )
     try:
@@ -516,8 +522,8 @@ def isolated_worker_messages(uid, action, payload):
         error_text = process.stderr.read().strip()
         if process.wait() != 0:
             raise RuntimeError(
-                "isolated CF network worker failed (UID %d): %s"
-                % (uid, error_text[-900:] or "no error text")
+                "isolated CF network worker failed (UID %d, GID %d): %s"
+                % (uid, gid, error_text[-900:] or "no error text")
             )
     finally:
         if process.poll() is None:
