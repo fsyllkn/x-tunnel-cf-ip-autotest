@@ -52,23 +52,21 @@ prepare() {
     [ -f "$example" ] || { say "缺少模板 $example"; return 1; }
     (umask 077; cp "$example" "$file") || return 1
   fi
-  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+  chmod 600 "$file"
 }
 can_check_config() {
   command -v python3 >/dev/null 2>&1 || return 1
-  case "$1" in
-    x-tunnel.yaml) python3 -c 'import yaml, logging' >/dev/null 2>&1 ;;
-    speedtest-bot.env) python3 -c 'import urllib.request, codecs; codecs.lookup("idna")' >/dev/null 2>&1 ;;
-    project.env) python3 -c 'import pathlib, shlex' >/dev/null 2>&1 ;;
-    *) return 1 ;;
-  esac
+  [ "$1" = "x-tunnel.yaml" ] && python3 -c 'import yaml' >/dev/null 2>&1
 }
 check_config() {
-  case "$1" in
-    x-tunnel.yaml) PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' ;;
-    speedtest-bot.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import telegram_speedtest_bot as b; b.read_config()' ;;
-    project.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import project_settings as p; p.load_project_env(); p.get_target_mbps()' >/dev/null ;;
-  esac
+  [ "$1" = "x-tunnel.yaml" ] || return 1
+  PYTHONPATH="$PROJECT_DIR" python3 - <<'PY'
+import supervisor
+from project_settings import get_target_mbps, read_telegram_credentials
+supervisor.read_specs(check_port_availability=False)
+get_target_mbps()
+read_telegram_credentials(require_chat_id=False)
+PY
 }
 edit_file() {
   root_only || return
@@ -81,7 +79,7 @@ edit_file() {
   chmod 600 "$backup"
   say "配置已备份: $backup"
   vi "$file" || { say '编辑未完成。'; return; }
-  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+  chmod 600 "$file"
   if ! can_check_config "$file"; then
     say '配置已保存。此设备尚缺少对应 Python 模块，安装所需功能时将检查配置。'
   elif check_config "$file"; then
@@ -90,9 +88,27 @@ edit_file() {
     say '配置校验失败，暂不要重启服务。'
     if ask '恢复编辑前的备份？'; then
       cp "$backup" "$file"
-      case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+      chmod 600 "$file"
     fi
   fi
+}
+config_help() {
+  say '唯一配置文件: x-tunnel.yaml（必须 chmod 600）'
+  say '  defaults: token, cfip, connections, ech, dns, listen_hosts, first_port'
+  say '  nodes:   名称|WSS服务端|token|cfip|连接数|端口'
+  say '  settings: provider_path, process_uid, local_proxy, telegram_proxy, target_mbps'
+  say '  telegram: token, chat_id（可选；敏感信息不在菜单显示）'
+  say '旧版 project.env / speedtest-bot.env 升级时自动迁移并归档。'
+}
+backup_unified_config() {
+  root_only || return
+  prepare x-tunnel.yaml x-tunnel.example.yaml || return
+  mkdir -p cfip-data/config-backups || return
+  chmod 700 cfip-data cfip-data/config-backups
+  backup="cfip-data/config-backups/x-tunnel.yaml.$(date +%Y%m%d-%H%M%S).$"
+  (umask 077; cp x-tunnel.yaml "$backup") || return
+  chmod 600 "$backup"
+  say "已备份统一配置: $backup"
 }
 manage_svc() {
   root_only || return
@@ -140,7 +156,7 @@ export_socks_providers() {
     return 1
   fi
   say '导出结果（仅 SOCKS5，不生成伪造的 ss:// 链接）：'
-  # The canonical provider may be redirected through project.env.
+  # Provider path is managed by x-tunnel.yaml settings.provider_path.
   python3 -c '
 from sync_singbox import provider_path, CLASH_FILE, V2RAY_FILE, SOCKS_LINKS_FILE
 p = provider_path()
@@ -215,7 +231,6 @@ repair_kernel() {
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
-  prepare project.env project.env.example || return
   if grep -q 'example.com\|替换为' x-tunnel.yaml; then
     say '检测到节点示例配置。请先填写真实 X-Tunnel 服务地址和密钥。'
     if ask '现在编辑节点配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
@@ -387,8 +402,8 @@ show_menu() {
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
   say ' 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支'
-  say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
-  say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
+  say ' 3) 编辑统一 YAML 配置     4) 查看配置字段说明'
+  say ' 5) 备份统一 YAML 配置     6) X-Tunnel 服务管理'
   say ' 7) Telegram Bot 服务管理  8) 查看日志'
   say ' 9) 定时测速管理          10) 立即运行完整测速'
   say '11) 配置检查              12) 卸载服务（保留配置）'
@@ -398,6 +413,14 @@ show_menu() {
   say '19) 安装已验证 Go 1.26 稳定内核'
   say ' 0) 退出'
 }
+# Auto-migrate old variable files on upgrade without restarting services.
+if [ -f "$PROJECT_DIR/x-tunnel.yaml" ] &&
+   { [ -f "$PROJECT_DIR/project.env" ] || [ -f "$PROJECT_DIR/speedtest-bot.env" ]; } &&
+   command -v python3 >/dev/null 2>&1 &&
+   python3 -c 'import yaml, fcntl' >/dev/null 2>&1; then
+  python3 "$PROJECT_DIR/migrate_config.py" || say '[WARN] 旧配置迁移失败，先检查错误再重启服务。'
+fi
+
 while :; do
   show_menu
   printf '\n请输入选项: '
@@ -405,22 +428,24 @@ while :; do
   case "$option" in
     1) install_services;;
     2) update_code;;
-    3) edit_file speedtest-bot.env speedtest-bot.env.example;;
-    4) edit_file project.env project.env.example;;
-    5) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
+    3) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
+    4) config_help;;
+    5) backup_unified_config;;
     6) manage_svc core;;
     7) manage_svc bot;;
     8) show_logs;;
     9) manage_timer;;
     10) run_test;;
     11)
-      for file in x-tunnel.yaml speedtest-bot.env project.env; do
-        if [ -f "$file" ]; then
-          if ! can_check_config "$file"; then say "$file: 等待安装依赖后校验"
-          elif check_config "$file"; then say "$file: OK"
-          else say "$file: INVALID"; fi
-        else say "$file: 未配置"; fi
-      done;;
+      if [ ! -f x-tunnel.yaml ]; then
+        say 'x-tunnel.yaml: 未配置'
+      elif ! can_check_config x-tunnel.yaml; then
+        say 'x-tunnel.yaml: 缺少 PyYAML，无法校验'
+      elif check_config x-tunnel.yaml; then
+        say 'x-tunnel.yaml: OK（节点、监听、UID、测速目标和可选 Bot 均已校验）'
+      else
+        say 'x-tunnel.yaml: INVALID'
+      fi;;
     13)
       root_only || continue
       prepare x-tunnel.yaml x-tunnel.example.yaml || continue
@@ -428,11 +453,9 @@ while :; do
         say '请先在选项 5 配置真实节点，再安装 Telegram Bot。'
         continue
       fi
-      prepare speedtest-bot.env speedtest-bot.env.example || continue
-      prepare project.env project.env.example || continue
-      if grep -q '替换为' speedtest-bot.env; then
-        say '先填写 TG_TOKEN、TG_CHATID，并确认 project.env 中的 Telegram 代理地址。'
-        if ask '现在编辑 Telegram Bot 配置？'; then edit_file speedtest-bot.env speedtest-bot.env.example; fi
+      if ! python3 -c 'import telegram_speedtest_bot as b; b.read_config()' >/dev/null 2>&1; then
+        say '先在 x-tunnel.yaml 的 telegram.token / telegram.chat_id 填写凭据。'
+        if ask '现在编辑统一 YAML 配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
       else
         say '将按需安装 HTTPS/IDNA 和 ip-full 等组件，然后启动 Bot。'
         if ask '安装/启用 Bot（将重启核心服务）？'; then
