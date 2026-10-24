@@ -12,11 +12,16 @@ PROJECT_KEYS = {
     "X_TUNNEL_LISTEN_HOSTS",
     "X_TUNNEL_PROVIDER_PATH",
     "X_TUNNEL_PROCESS_UID",
+    "X_TUNNEL_PROCESS_GID",
     "X_TUNNEL_TG_PROXY",
     "X_TUNNEL_LOCAL_PROXY",
     "X_TUNNEL_TARGET_MBPS",
 }
 DEFAULT_LOCAL_PROXY = "http://127.0.0.1:7890"
+# ShellCrash's socket-group bypass uses the PRIMARY GID of the process.
+# Never use a supplementary group or UID 0 to achieve compatibility.
+SHELLCRASH_GID = 7890
+SHELLCRASH_GROUP_FILE = Path("/etc/group")
 DEFAULT_TARGET_MBPS = 300
 MIN_TARGET_MBPS = 100
 MAX_TARGET_MBPS = 10000
@@ -36,6 +41,48 @@ def load_project_env():
             continue
         parsed = shlex.split(value, comments=True)
         os.environ[key] = parsed[0] if parsed else ""
+
+
+def shellcrash_compat_gid():
+    """Return 7890 only when the system group is exactly shellcrash:7890.
+
+    Do not assume that an unrelated group with numeric GID 7890 carries
+    ShellCrash's bypass rule. This is a group-based compatibility hint, not
+    proof that a running firewall rule has been installed.
+    """
+    try:
+        for line in SHELLCRASH_GROUP_FILE.read_text(encoding="utf-8").splitlines():
+            fields = line.split(":")
+            if (len(fields) >= 4 and fields[0] == "shellcrash"
+                    and fields[2].isdecimal() and int(fields[2]) == SHELLCRASH_GID):
+                return SHELLCRASH_GID
+    except OSError:
+        pass
+    return None
+
+
+def configured_process_gid(uid):
+    """Keep isolated UID while optionally selecting ShellCrash bypass GID.
+
+    X_TUNNEL_PROCESS_GID:
+      auto (default): shellcrash primary GID 7890, if group verified; else UID
+      uid:            always use GID matching the dedicated UID
+      7890:           require the verified shellcrash group or fail closed
+    The caller must have loaded project.env before invoking this function.
+    """
+    if not isinstance(uid, int) or isinstance(uid, bool) or not 1000 <= uid <= 60000:
+        raise ValueError("dedicated X-Tunnel UID must be in 1000..60000")
+    mode = os.environ.get("X_TUNNEL_PROCESS_GID", "auto").strip().lower()
+    if mode == "uid":
+        return uid
+    if mode in ("", "auto", str(SHELLCRASH_GID)):
+        compatible = shellcrash_compat_gid()
+        if mode == str(SHELLCRASH_GID) and compatible is None:
+            raise ValueError(
+                "X_TUNNEL_PROCESS_GID=7890 requires /etc/group entry shellcrash:x:7890"
+            )
+        return compatible if compatible is not None else uid
+    raise ValueError("X_TUNNEL_PROCESS_GID must be auto, uid, or 7890")
 
 
 def normalize_proxy(value):
