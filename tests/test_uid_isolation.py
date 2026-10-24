@@ -68,6 +68,24 @@ class UIDIsolationTest(unittest.TestCase):
             self.assertEqual(kwargs["cwd"], "/tmp/x-tunnel-test-work")
             self.assertEqual(kwargs["env"]["HOME"], "/tmp/x-tunnel-test-work")
 
+    def test_configured_gid_flows_into_node_specs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = Path(directory) / "x-tunnel.yaml"
+            cfg.write_text(
+                'defaults:\n  token: test\n  cfip: 1.1.1.1\n'
+                'nodes:\n  - "hk|wss://example.org/about:443||||"\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(supervisor, "CONFIG", cfg), \
+                 mock.patch.object(supervisor, "load_project_env"), \
+                 mock.patch.object(supervisor, "configured_process_uid", return_value=29002), \
+                 mock.patch.object(supervisor, "configured_process_gid", return_value=7890):
+                specs = supervisor.read_specs(check_port_availability=False)
+            self.assertEqual(specs[0]["process_uid"], 29002)
+            self.assertEqual(specs[0]["process_gid"], 7890)
+            self.assertEqual(specs[0]["port"], 32322)
+            self.assertIn(Path("/etc/group"), supervisor.WATCHED_FILES)
+
     def test_shellcrash_gid_auto_and_explicit_opt_out(self):
         with tempfile.TemporaryDirectory() as directory:
             group_file = Path(directory) / "group"
