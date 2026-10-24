@@ -169,7 +169,7 @@ TG_CHATID='你的私聊数字ChatID'
 | `X_TUNNEL_LOCAL_PROXY` | Telegram 请求使用的本地或局域网 HTTP 代理；模板默认 `http://127.0.0.1:7890` |
 | `X_TUNNEL_TG_PROXY` | 可选 Telegram 专用代理，优先于本地代理 |
 | `X_TUNNEL_PROVIDER_PATH` | Provider 输出位置，默认 `runtime/x-tunnel-provider.json` |
-| `X_TUNNEL_LISTEN_HOSTS` | SOCKS5 监听 IP，默认仅本机 `127.0.0.1` |
+| `X_TUNNEL_LISTEN_HOSTS` | SOCKS5 监听覆盖项（英文逗号分隔）；**留空时读取 `x-tunnel.yaml` 的 `defaults.listen_hosts`**，否则覆盖 YAML |
 | `X_TUNNEL_TARGET_MBPS` | CF IP 测速目标速度，默认 300 Mbps |
 
 例如 ShellCrash HTTP 代理在其他 LAN 设备的 `192.168.68.21:7890`：
@@ -179,6 +179,48 @@ X_TUNNEL_LOCAL_PROXY=http://192.168.68.21:7890
 ```
 
 上述地址仅为示例，必须改成你的**实际可连通**代理。如果要让局域网其他设备访问 SOCKS5，还需正确设置监听 IP 和系统防火墙；请勿无意开放到 WAN。
+
+#### SOCKS5 局域网监听与 OpenWrt 排查
+
+`openwrt` 分支在 2026-10-24 修复了一个旧问题：安装时自动生成的 `project.env` 默认包含空的 `X_TUNNEL_LISTEN_HOSTS=`，旧版 `supervisor.py` 会因此忽略 `x-tunnel.yaml` 中的 `listen_hosts`，错误回退为 `127.0.0.1`。新版遵循以下顺序：
+
+1. `project.env` 中 **非空的** `X_TUNNEL_LISTEN_HOSTS` → 优先覆盖 YAML；
+2. `project.env` 中变量为空或缺失 → 使用 `x-tunnel.yaml` 的 `defaults.listen_hosts`；
+3. YAML 未指定 `listen_hosts` → 默认仅监听 `127.0.0.1`。
+
+建议只在 LAN 接口地址上绑定，例如设备实际 LAN IP 是 `192.168.68.11`：
+
+```yaml
+defaults:
+  listen_hosts:
+    - "127.0.0.1"
+    - "192.168.68.11"
+  first_port: 32322
+```
+
+此时 `project.env` 中 **`X_TUNNEL_LISTEN_HOSTS=` 保持为空即可**。或者明确写 `X_TUNNEL_LISTEN_HOSTS=127.0.0.1,192.168.68.11`，这会覆盖 YAML，不会合并。不要使用设备没有分配的 IP；不要在未限制防火墙前将无认证 SOCKS5 暴露到 WAN。
+
+OpenWrt 上安全地检查实际生效监听：
+
+```sh
+cd /overlay/x-tunnel-cf-ip-autotest
+grep '^X_TUNNEL_LISTEN_HOSTS=' project.env
+python3 - <<'PY'
+from supervisor import read_specs
+for node in read_specs(check_port_availability=False):
+    print(node["name"], "SOCKS5 port", node["port"], "listen", node["listen_hosts"])
+PY
+ip -4 addr
+ss -lntp | grep ':32322'
+```
+
+如果代码刚更新，应在维护窗口重启 X-Tunnel procd 服务让其加载新版 Python 文件：
+
+```sh
+/etc/init.d/x-tunnel restart
+```
+
+从另一台 LAN 设备测试：`curl --socks5-hostname 192.168.68.11:32322 https://api.ipify.org`。若 `ss` 已显示 LAN IP 监听，但其他设备依然连接超时/被拒绝，进一步检查 OpenWrt 的 LAN zone input 规则、nftables、防火墙自定义规则与访问端设备之间的 IP 连通性；项目**不会自动打开所有 LAN/WAN 防火墙入站端口**。注意默认 SOCKS5 端口可能因冲突而自动重新分配，应以实际监听与 supervisor 日志为准。
 
 ## 5. 安装模式和资源占用
 
