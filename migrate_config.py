@@ -34,10 +34,12 @@ BOT_MAPPING = {
 
 
 def parse_env(path):
+    if path.is_symlink():
+        raise ValueError("%s must not be a symlink" % path.name)
     if not path.exists():
         return {}
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("%s must be a regular, non-symlink file" % path.name)
+    if not path.is_file():
+        raise ValueError("%s must be a regular file" % path.name)
     result = {}
     for index, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
