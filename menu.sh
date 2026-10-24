@@ -60,23 +60,21 @@ prepare() {
     [ -f "$example" ] || { say "缺少模板 $example"; return 1; }
     (umask 077; cp "$example" "$file") || return 1
   fi
-  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+  chmod 600 "$file"
 }
 can_check_config() {
   command -v python3 >/dev/null 2>&1 || return 1
-  case "$1" in
-    x-tunnel.yaml) python3 -c 'import yaml, logging' >/dev/null 2>&1 ;;
-    speedtest-bot.env) python3 -c 'import urllib.request, codecs; codecs.lookup("idna")' >/dev/null 2>&1 ;;
-    project.env) python3 -c 'import pathlib, shlex' >/dev/null 2>&1 ;;
-    *) return 1 ;;
-  esac
+  [ "$1" = "x-tunnel.yaml" ] && python3 -c 'import yaml' >/dev/null 2>&1
 }
 check_config() {
-  case "$1" in
-    x-tunnel.yaml) PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' ;;
-    speedtest-bot.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import telegram_speedtest_bot as b; b.read_config()' ;;
-    project.env) PYTHONPATH="$PROJECT_DIR" python3 -c 'import project_settings as p; p.load_project_env(); p.get_target_mbps()' >/dev/null ;;
-  esac
+  [ "$1" = "x-tunnel.yaml" ] || return 1
+  PYTHONPATH="$PROJECT_DIR" python3 - <<'PY'
+import supervisor
+from project_settings import get_target_mbps, read_telegram_credentials
+supervisor.read_specs(check_port_availability=False)
+get_target_mbps()
+read_telegram_credentials(require_chat_id=False)
+PY
 }
 edit_file() {
   root_only || return
@@ -89,7 +87,7 @@ edit_file() {
   chmod 600 "$backup"
   say "配置已备份: $backup"
   vi "$file" || { say '编辑未完成。'; return; }
-  case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+  chmod 600 "$file"
   if ! can_check_config "$file"; then
     say '配置已保存。此设备尚缺少对应 Python 模块，安装所需功能时将检查配置。'
   elif check_config "$file"; then
@@ -98,9 +96,27 @@ edit_file() {
     say '配置校验失败，暂不要重启服务。'
     if ask '恢复编辑前的备份？'; then
       cp "$backup" "$file"
-      case "$file" in x-tunnel.yaml|speedtest-bot.env) chmod 600 "$file";; project.env) chmod 644 "$file";; esac
+      chmod 600 "$file"
     fi
   fi
+}
+config_help() {
+  say '唯一配置文件: x-tunnel.yaml（必须 chmod 600）'
+  say '  defaults: token, cfip, connections, ech, dns, listen_hosts, first_port'
+  say '  nodes:   名称|WSS服务端|token|cfip|连接数|端口'
+  say '  settings: provider_path, process_uid, process_gid, local_proxy, telegram_proxy, target_mbps'
+  say '  telegram: token, chat_id（可选；敏感信息不在菜单显示）'
+  say '旧版 project.env / speedtest-bot.env 升级时自动迁移并归档。'
+}
+backup_unified_config() {
+  root_only || return
+  prepare x-tunnel.yaml x-tunnel.example.yaml || return
+  mkdir -p cfip-data/config-backups || return
+  chmod 700 cfip-data cfip-data/config-backups
+  backup="cfip-data/config-backups/x-tunnel.yaml.$(date +%Y%m%d-%H%M%S).$"
+  (umask 077; cp x-tunnel.yaml "$backup") || return
+  chmod 600 "$backup"
+  say "已备份统一配置: $backup"
 }
 manage_svc() {
   root_only || return
@@ -148,7 +164,7 @@ export_socks_providers() {
     return 1
   fi
   say '导出结果（仅 SOCKS5，不生成伪造的 ss:// 链接）：'
-  # The canonical provider may be redirected through project.env.
+  # Provider path is managed by x-tunnel.yaml settings.provider_path.
   python3 -c '
 from sync_singbox import provider_path, CLASH_FILE, V2RAY_FILE, SOCKS_LINKS_FILE
 p = provider_path()
@@ -197,7 +213,7 @@ restart_service() {
   fi
   sleep 1
   printf '%s 当前状态: %s\n' "$name" "$(svc_status "$key")"
-  if [ "$key" = core ] && [ -f "$PROJECT_DIR/openwrt/healthcheck.py" ]; then
+  if [ "$key" = core ] && [ "$PLATFORM" = openwrt ]; then
     if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
       say 'ERROR: 核心进程运行中，但至少一个 SOCKS5 节点未监听；不能判定为可用。'
     fi
@@ -222,7 +238,6 @@ repair_kernel() {
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
-  prepare project.env project.env.example || return
   if grep -q 'example.com\|替换为' x-tunnel.yaml; then
     say '检测到节点示例配置。请先填写真实 X-Tunnel 服务地址和密钥。'
     if ask '现在编辑节点配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
@@ -235,7 +250,7 @@ install_services() {
 }
 update_code() {
   root_only || return
-  ask '从 GitHub main 分支更新代码并重新部署（将重启 X-Tunnel 核心）？' || return
+  ask '从 GitHub 更新代码并重新部署（将重启服务）？' || return
   if X_TUNNEL_INSTALL_DIR="$PROJECT_DIR" sh "$PROJECT_DIR/quick-install.sh" --core; then
     say '更新结束，重新载入管理菜单。'
     exec /bin/sh "$PROJECT_DIR/menu.sh"
@@ -366,7 +381,7 @@ manage_timer() {
           sh "$PROJECT_DIR/install.sh" --enable-timer "--timer-at=$chosen" || say '启用失败。'
         fi
       else
-        [ -f "$SYSTEMD_TIMER_CLI" ] || { say 'Linux 定时管理脚本不存在，请先更新 main 分支。'; return; }
+        [ -f "$SYSTEMD_TIMER_CLI" ] || { say 'Linux 定时管理脚本不存在，请先更新 lxc 分支。'; return; }
         saved=$(python3 "$SYSTEMD_TIMER_CLI" saved) || return
         printf '每日测速时间（24小时制 HH:MM）[%s]: ' "$saved"
         IFS= read -r chosen || return
@@ -396,6 +411,8 @@ run_test() {
   if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
   else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
 }
+# Menu labels are padded by terminal cell width (CJK=2), not byte count.
+# Keep the second label at cell 33; do not format two columns with printf %-Ns.
 show_menu() {
   say '=========================================================='
   say '                 X-Tunnel 管理菜单'
@@ -408,17 +425,23 @@ show_menu() {
   printf '项目路径: %s\n' "$PROJECT_DIR"
   printf '核心服务: %s  |  TG Bot: %s  |  定时测速: %s\n' "$(svc_status core)" "$(svc_status bot)" "$(timer_status)"
   say '----------------------------------------------------------'
-  say ' 1) 安装/修复核心服务       2) GitHub 更新 Linux main 分支'
-  say ' 3) 设置 Telegram Bot      4) 编辑项目变量配置'
-  say ' 5) 编辑 X-Tunnel 节点     6) X-Tunnel 服务管理'
-  say ' 7) Telegram Bot 服务管理  8) 查看日志'
-  say ' 9) 定时测速管理          10) 立即运行完整测速'
-  say '11) 配置检查              12) 卸载服务（保留配置）'
-  say '13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存'
-  say '15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot'
-  say '17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点'
-  say '19) 已验证内核修复（备份旧内核）'
-  say ' 0) 退出'
+  say '  【安装与常用】'
+  say '   1) 安装/修复核心服务           2) 更新 GitHub lxc 分支'
+  say '   3) 重启 X-Tunnel               4) 查看日志'
+  say '   5) X-Tunnel 服务管理           6) 停止 X-Tunnel 核心'
+  say '  【配置管理】'
+  say '   7) 编辑统一 YAML 配置          8) 配置检查'
+  say '   9) 查看配置字段说明           10) 备份统一 YAML 配置'
+  say '  【CF IP 测速】'
+  say '  11) 立即运行完整测速           12) 定时测速管理'
+  say '  【Telegram Bot】'
+  say '  13) 安装/启用 Telegram Bot     14) Telegram Bot 服务管理'
+  say '  15) 重启 Telegram Bot          16) 关闭 Bot 节省内存'
+  say '  【导出与维护】'
+  say '  17) 导出 Clash/V2Ray/SOCKS5 节点'
+  say '  18) 修复已验证的 X-Tunnel 内核'
+  say '  19) 卸载服务（保留配置）'
+  say '   0) 退出'
 }
 while :; do
   show_menu
@@ -427,62 +450,62 @@ while :; do
   case "$option" in
     1) install_services;;
     2) update_code;;
-    3) edit_file speedtest-bot.env speedtest-bot.env.example;;
-    4) edit_file project.env project.env.example;;
-    5) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
-    6) manage_svc core;;
-    7) manage_svc bot;;
-    8) show_logs;;
-    9) manage_timer;;
-    10) run_test;;
-    11)
-      for file in x-tunnel.yaml speedtest-bot.env project.env; do
-        if [ -f "$file" ]; then
-          if ! can_check_config "$file"; then say "$file: 等待安装依赖后校验"
-          elif check_config "$file"; then say "$file: OK"
-          else say "$file: INVALID"; fi
-        else say "$file: 未配置"; fi
-      done;;
+    3) restart_service core;;
+    4) show_logs;;
+    5) manage_svc core;;
+    6) stop_core_only;;
+    7) edit_file x-tunnel.yaml x-tunnel.example.yaml;;
+    8)
+      if [ ! -f x-tunnel.yaml ]; then
+        say 'x-tunnel.yaml: 未配置'
+      elif ! can_check_config x-tunnel.yaml; then
+        say 'x-tunnel.yaml: 缺少 PyYAML，无法校验'
+      elif check_config x-tunnel.yaml; then
+        say 'x-tunnel.yaml: OK（节点、监听、UID、测速目标和可选 Bot 均已校验）'
+      else
+        say 'x-tunnel.yaml: INVALID'
+      fi;;
+    9) config_help;;
+    10) backup_unified_config;;
+    11) run_test;;
+    12) manage_timer;;
     13)
       root_only || continue
       prepare x-tunnel.yaml x-tunnel.example.yaml || continue
       if grep -q 'example.com\|替换为' x-tunnel.yaml; then
-        say '请先在选项 5 配置真实节点，再安装 Telegram Bot。'
+        say '请先在选项 7 编辑统一 YAML 配置并填写真实节点，再安装 Telegram Bot。'
         continue
       fi
-      prepare speedtest-bot.env speedtest-bot.env.example || continue
-      prepare project.env project.env.example || continue
-      if grep -q '替换为' speedtest-bot.env; then
-        say '先填写 TG_TOKEN、TG_CHATID，并确认 project.env 中的 Telegram 代理地址。'
-        if ask '现在编辑 Telegram Bot 配置？'; then edit_file speedtest-bot.env speedtest-bot.env.example; fi
+      if ! python3 -c 'import telegram_speedtest_bot as b; b.read_config()' >/dev/null 2>&1; then
+        say '先在 x-tunnel.yaml 的 telegram.token / telegram.chat_id 填写凭据。'
+        if ask '现在编辑统一 YAML 配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
       else
         say '将按需安装 HTTPS/IDNA 和 ip-full 等组件，然后启动 Bot。'
         if ask '安装/启用 Bot（将重启核心服务）？'; then
           sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'
         fi
       fi;;
-    14)
+    14) manage_svc bot;;
+    15) restart_service bot;;
+    16)
       root_only || continue
       if [ "$PLATFORM" = systemd ]; then
         systemctl disable --now x-tunnel-speedtest-bot.service || say 'Bot 停用失败。'
-        say 'X-Tunnel 核心与定时测速均未改变。'
+        say 'X-Tunnel 核心与定时测速未改变。'
       elif [ -f /etc/init.d/x-tunnel-speedtest-bot ]; then
         /etc/init.d/x-tunnel-speedtest-bot stop >/dev/null 2>&1 || true
         /etc/init.d/x-tunnel-speedtest-bot disable >/dev/null 2>&1 || true
-        say 'Bot 已停止并取消开机自启；X-Tunnel 核心服务未重启。'
+        say 'Bot 已停止并取消开机自启。'
       else
         say 'Bot 服务尚未安装。'
       fi;;
-    12)
+    17) export_socks_providers;;
+    18) repair_kernel;;
+    19)
       root_only || continue
       if ask '卸载服务和定时任务（保留配置与内核）？'; then
         sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
       fi;;
-    15) restart_service core;;
-    16) restart_service bot;;
-    17) stop_core_only;;
-    18) export_socks_providers;;
-    19) repair_kernel;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
