@@ -15,15 +15,23 @@ import supervisor
 
 
 class UIDIsolationTest(unittest.TestCase):
-    def test_default_and_overridden_uid(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+    def test_default_and_yaml_overridden_uid(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("project_settings.CONFIG_FILE", Path(directory) / "x-tunnel.yaml"):
+            cfg = Path(directory) / "x-tunnel.yaml"
+            cfg.write_text("settings:\n  process_uid: 29002\n", encoding="utf-8")
             self.assertEqual(supervisor.configured_process_uid(), 29002)
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "0"}):
+            cfg.write_text("settings:\n  process_uid: 0\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "29003"}), \
-             mock.patch.object(Path, "read_text", return_value="root:x:0:0:root:/root:/bin/sh\n"):
-            self.assertEqual(supervisor.configured_process_uid(), 29003)
+            cfg.write_text("settings:\n  process_uid: 29003\n", encoding="utf-8")
+            with mock.patch.object(Path, "read_text",
+                                   side_effect=lambda *a, **k: (
+                                       "root:x:0:0:root:/root:/bin/sh\n"
+                                       if str(a[0]) == "/etc/passwd"
+                                       else "settings:\n  process_uid: 29003\n"
+                                   )):
+                self.assertEqual(supervisor.configured_process_uid(), 29003)
 
     def test_workdirs_are_per_node_and_private(self):
         with tempfile.TemporaryDirectory() as directory, \
