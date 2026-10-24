@@ -20,7 +20,15 @@ sudo python3 systemd/speedtest-timer.py enable 18:00
 sudo python3 systemd/speedtest-timer.py status
 ```
 
-此分支针对 **非特权 LXC**，不需要 eBPF，也不应取消 AppArmor/seccomp。X-Tunnel Go 核心默认在非 root UID 29002 下运行，supervisor 使用 systemd。
+此分支针对 **非特权 LXC**，不需要 eBPF，也不应取消 AppArmor/seccomp。X-Tunnel Go 核心默认在非 root UID 29002 下运行，supervisor 使用 systemd。无 ShellCrash 时主 GID 同样为 29002；如果存在精确的 `shellcrash:x:7890` 系统组，默认自动选择主 GID 7890，让子进程能匹配 ShellCrash 的 GID 旁路规则。该设置不会增加容器特权或改动 ShellCrash 配置。
+
+### 可选：共存 ShellCrash 的主 GID 兼容
+
+在 `project.env` 中保留默认的 `X_TUNNEL_PROCESS_GID=auto`（旧配置未写此字段也默认 auto）。检测到标准 ShellCrash 组时，Go 核心与独立 CF 测速 worker 保持 **UID 29002 / 主 GID 7890**，否则回退为 **UID 29002 / GID 29002**。也可设置 `X_TUNNEL_PROCESS_GID=uid` 强制关闭兼容，或设置 `7890` 并要求该 ShellCrash 组实际存在。
+
+之前安装器设置的 systemd `Group=7890` 只影响主服务自身；Python 明确传入 `subprocess.Popen(group=29002)` 后，Go 子进程会丢失该 GID。这次修复独立解决了子进程身份覆盖的问题。测试与配置均不使用补充组替代主 GID。
+
+如果 ShellCrash 是**后来安装**的，重跑 `install.sh` 可同步测速 systemd unit 的 Group drop-in；但重跑安装器可能重新部署并重启 X-Tunnel 服务，请在维护窗口执行。默认自动选择 GID 也不代表 ShellCrash 当前实际的 OUTPUT 豁免规则已经生效；如仍有 DoH fake-IP 或节点监听失败，要继续核实当前防火墙规则和 SOCKS 连接。完整操作见 [SHELLCRASH-COMPATIBILITY.md](SHELLCRASH-COMPATIBILITY.md)。
 
 测速有两种路由情形：
 
