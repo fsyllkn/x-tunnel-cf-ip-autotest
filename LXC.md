@@ -1,5 +1,7 @@
 # PVE LXC 配套 X-Tunnel + CF IP 测速（lxc 分支）
 
+本分支使用最新的 OpenWrt **统一 `x-tunnel.yaml` 格式**，不再依赖 `project.env` 或 `speedtest-bot.env`。旧文件由 `migrate_config.py` 自动迁移并备份。
+
 本分支配合 [sing-box LXC 分支](https://github.com/fsyllkn/linux_openwrt-sing-box/tree/lxc) 使用，保留 Linux `main` 的 systemd、多节点 SOCKS5、Provider 导出、Cloudflare IP 测速和每日 `HH:MM` 定时器。
 
 LXC 内先完成 sing-box `lxc/install.sh proxy` 安装，再配置 X-Tunnel：
@@ -9,6 +11,7 @@ cd /opt
 git clone -b lxc https://github.com/fsyllkn/x-tunnel-cf-ip-autotest.git
 cd x-tunnel-cf-ip-autotest
 cp -n x-tunnel.example.yaml x-tunnel.yaml
+chmod 600 x-tunnel.yaml
 nano x-tunnel.yaml
 # 按实际环境设置服务端 WSS、token、cfip；默认 127.0.0.1:32322
 sudo sh install.sh --with-speedtest
@@ -24,7 +27,7 @@ sudo python3 systemd/speedtest-timer.py status
 
 ### 可选：共存 ShellCrash 的主 GID 兼容
 
-在 `project.env` 中保留默认的 `X_TUNNEL_PROCESS_GID=auto`（旧配置未写此字段也默认 auto）。检测到标准 ShellCrash 组时，Go 核心与独立 CF 测速 worker 保持 **UID 29002 / 主 GID 7890**，否则回退为 **UID 29002 / GID 29002**。也可设置 `X_TUNNEL_PROCESS_GID=uid` 强制关闭兼容，或设置 `7890` 并要求该 ShellCrash 组实际存在。
+在 `x-tunnel.yaml` 的 `settings.process_gid` 中保留默认的 `auto`（旧配置尚未写此字段也默认 auto）。检测到标准 ShellCrash 组时，Go 核心与独立 CF 测速 worker 保持 **UID 29002 / 主 GID 7890**，否则回退为 **UID 29002 / GID 29002**。也可设置 `settings.process_gid: uid` 强制关闭兼容，或设置 `7890` 并要求该 ShellCrash 组实际存在。
 
 之前安装器设置的 systemd `Group=7890` 只影响主服务自身；Python 明确传入 `subprocess.Popen(group=29002)` 后，Go 子进程会丢失该 GID。这次修复独立解决了子进程身份覆盖的问题。测试与配置均不使用补充组替代主 GID。
 
