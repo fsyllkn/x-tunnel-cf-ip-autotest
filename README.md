@@ -13,7 +13,7 @@
 ## 功能
 
 - X-Tunnel 多个节点分别运行 SOCKS5 子进程，支持按节点管理、监控和配置热重载；端口由实际节点配置决定。
-- supervisor 管理节点进程、端口冲突和异常重启。root supervisor 只管理进程/配置，**Go SOCKS5 子进程**使用专用非 root UID/GID（默认 `29002`）。
+- supervisor 管理节点进程、端口冲突和异常重启。root supervisor 只管理进程/配置，**Go SOCKS5 子进程**使用专用非 root UID（默认 `29002`），主 GID 根据 ShellCrash 组按需选择（普通 LXC 为 `29002`，检测到 `shellcrash:7890` 时为 `7890`）。
 - Cloudflare IPv4/IPv6 候选来源、1 秒 RTT/TLS/CF-RAY 初筛、下载测速、分档速度目标、地区分配与备用 IP；符合规则的候选写入 `x-tunnel.yaml`，保留原 IP 作为兜底。
 - 支持生成 sing-box SOCKS5 Provider JSON、Clash/Mihomo YAML、Xray/V2Ray 出站片段、SOCKS5 分享链接。不生成虚构的 SS 节点。
 - Telegram Bot 可选部署：通知、单 IP 测速和完整测速。**无需 Bot 凭据即可部署核心节点。**
@@ -102,13 +102,13 @@ journalctl -u x-tunnel-speedtest.service --no-pager -n 70
 
 ## 4. 与 sing-box eBPF 防回环
 
-在 `project.env` 设置 `X_TUNNEL_PROCESS_UID=29002`（默认值）；该 UID/GID 不应与已有系统用户冲突。即使 Linux 上只启用了 sing-box 本机 eBPF、尚未开启单网口 LAN 网关，测速程序也会检查正在运行的 sing-box 服务，并使用 eBPF 排除的专用 UID 测试直连网络，避免 root 流量被代理而导致 CF 测速虚高。**只有 SOCKS5 Go 核心与 CF RTT/下载子进程使用该身份，管理进程依然是 root**。测速前还会检查 sing-box 的网关策略路由与 eBPF `local.exclude_uid` 配置，检查失败会拒绝继续，避免测速数据经过代理失真。
+在 `project.env` 设置 `X_TUNNEL_PROCESS_UID=29002`（默认值）；UID 不应与已有系统用户冲突。`X_TUNNEL_PROCESS_GID=auto` 默认根据 `/etc/group` 精确匹配 `shellcrash:7890`，匹配时让 Go 核心及隔离测速 worker 使用主 GID `7890`，否则仍使用 GID `29002`。可设为 `uid` 禁止 GID 切换，或设为 `7890` 要求组存在才启动。即使 Linux 上只启用了 sing-box 本机 eBPF、尚未开启单网口 LAN 网关，测速程序也会检查正在运行的 sing-box 服务，并使用 eBPF 排除的专用 UID 测试直连网络，避免 root 流量被代理而导致 CF 测速虚高。**SOCKS5 Go 核心与隔离 CF RTT/下载子进程保持非 root UID，主 GID 单独选择；管理进程依然是 root**。测速前还会检查 sing-box 的网关策略路由与 eBPF `local.exclude_uid` 配置，检查失败会拒绝继续，避免测速数据经过代理失真。
 
 ```bash
 getent passwd 29002 || true
 getent group 29002 || true
 pidof x-tunnel
-for pid in $(pidof x-tunnel); do awk '/^Uid:/ {print FILENAME, $2}' /proc/$pid/status; done
+for pid in $(pidof x-tunnel); do echo "PID=$pid"; grep -E '^(Uid|Gid):' /proc/$pid/status; done
 
 # 在 sing-box 主机配置中排除真实运行的 UID
 sudo sbctl filter exclude-user 29002
@@ -146,6 +146,6 @@ x-t
 sudo sh uninstall.sh         # 只删除本项目服务和定时器，保留运行配置
 ```
 
-当前 main 分支会持续保留 systemd 专用服务入口；OpenWrt/iStoreOS 使用 `openwrt` 分支。旧版 Linux 安装中的 ShellCrash GID 7890 兼容逻辑仍保留，但 **GID 不是 eBPF UID 排除的替代品**。
+此 `lxc` 分支使用 systemd，普通 Linux 使用 `main` 分支，OpenWrt/iStoreOS 使用 `openwrt` 分支。**新版本已修复 systemd `Group=7890` 被 Python `subprocess.Popen(group=29002)` 覆盖的问题。** GID 7890 兼容仅在本机 `/etc/group` 存在准确的 ShellCrash 组时自动启用，不能仅凭 GID 判断 ShellCrash 放行规则是否生效，更不能用 GID 替代 reF1nd eBPF `local.exclude_uid` 的 UID 豁免。详见 [ShellCrash 兼容说明](SHELLCRASH-COMPATIBILITY.md)。
 
 GitHub Actions 覆盖 Python 编译、节点/测速路由回归、systemd 定时器 HH:MM 与导出格式的测试。**CI 不会验证你的真实 VPS、Cloudflare 出口、系统 eBPF 运行权限或实际带宽表现**；部署后仍需结合服务日志和实际网络检查。
