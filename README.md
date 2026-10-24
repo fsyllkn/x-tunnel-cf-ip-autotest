@@ -1,151 +1,154 @@
-# PVE LXC 专用 X-Tunnel + Cloudflare IP 测速（lxc）
+# X-Tunnel + Cloudflare IP 测速 · PVE LXC（`lxc` 分支）
 
-**这是 PVE 非特权 Debian/Ubuntu LXC 的配套分支。** 推荐先阅读 [LXC.md](LXC.md) 和 [sing-box LXC 部署指南](https://github.com/fsyllkn/linux_openwrt-sing-box/tree/lxc)。
+**本分支已基于 `openwrt` 分支的统一 YAML 版本重新整合。** 在 Debian/Ubuntu **systemd**、PVE 非特权 LXC 中使用；保留此前 `lxc` 分支已验证的纯 TPROXY/标准出站路径检查、systemd 定时器、独立 UID 和 ShellCrash 主 GID 兼容。不会安装 OpenWrt 的 procd 脚本，也不会自动修改其他服务的路由、DNS、ShellCrash 防火墙或 LXC 特权设置。
 
-其余 Linux systemd 功能与 main 的文档一致。下面保留完整功能介绍与管理说明。
+- [LXC 部署与网络验证](LXC.md)
+- [ShellCrash GID 7890 兼容](SHELLCRASH-COMPATIBILITY.md)
+- [对应 OpenWrt 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt)
+- [配套 sing-box LXC](https://github.com/fsyllkn/linux_openwrt-sing-box/tree/lxc)
 
----
+## 1. 配置已完全统一
 
-# X-Tunnel + Cloudflare IP 测速（Debian / Ubuntu main）
+**唯一需要编辑的项目配置是 `x-tunnel.yaml`。** 原 `project.env`、`speedtest-bot.env` 不再是运行时配置来源；安装程序使用 `migrate_config.py` 将旧文件的字段、Bot Token、监听地址导入 YAML，在 `cfip-data/config-backups/legacy-env-*/` 留下权限为 0600 的私有备份后才归档旧文件。YAML 必须为 `0600`；不要提交真实 Token、节点配置及测速历史。
 
-本分支面向 **Debian / Ubuntu 的 systemd 环境**，承接 [OpenWrt 分支](https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/tree/openwrt) 已验证的 CF IP RTT/下载测速、自动候选筛选、多节点 SOCKS5、Provider 导出、独立 UID 防 sing-box eBPF 回环及可配置定时测速。两条分支的服务管理不同：本分支使用 systemd，不修改路由器 nftables 或 sing-box 规则。
+```yaml
+defaults:
+  token: "YOUR_X_TUNNEL_TOKEN"
+  cfip: "162.159.1.1"
+  connections: 3
+  ech: "cloudflare-ech.com"
+  dns: "https://doh.pub/dns-query"
+  listen_hosts:
+    - "127.0.0.1"
+  first_port: 32322
 
-## 功能
+max_nodes: 5
+nodes:
+  - "hk|wss://example.org/about:443||||"
 
-- X-Tunnel 多个节点分别运行 SOCKS5 子进程，支持按节点管理、监控和配置热重载；端口由实际节点配置决定。
-- supervisor 管理节点进程、端口冲突和异常重启。root supervisor 只管理进程/配置，**Go SOCKS5 子进程**使用专用非 root UID（默认 `29002`），主 GID 根据 ShellCrash 组按需选择（普通 LXC 为 `29002`，检测到 `shellcrash:7890` 时为 `7890`）。
-- Cloudflare IPv4/IPv6 候选来源、1 秒 RTT/TLS/CF-RAY 初筛、下载测速、分档速度目标、地区分配与备用 IP；符合规则的候选写入 `x-tunnel.yaml`，保留原 IP 作为兜底。
-- 支持生成 sing-box SOCKS5 Provider JSON、Clash/Mihomo YAML、Xray/V2Ray 出站片段、SOCKS5 分享链接。不生成虚构的 SS 节点。
-- Telegram Bot 可选部署：通知、单 IP 测速和完整测速。**无需 Bot 凭据即可部署核心节点。**
-- 使用 **systemd timer** 每日测速，默认设备本地时间 `18:00`，支持 `HH:MM` 修改与关闭，不重新启动 X-Tunnel 核心。
-- 与 reF1nd sing-box 配合时，测速以 eBPF 排除的专用 UID 建立测试连接；识别已知单网口路由 `fwmark 0x1536 / table 53136`，不增删 sing-box 网关路由。
+settings:
+  provider_path: "runtime/x-tunnel-provider.json"
+  process_uid: 29002
+  process_gid: auto
+  local_proxy: "http://127.0.0.1:7890"
+  telegram_proxy: ""
+  target_mbps: 300
 
-## 1. 系统与依赖
-
-- Debian 11/12/13、Ubuntu 22.04/24.04+，systemd，x86_64/amd64 或 aarch64/arm64。
-- root/sudo、Python **3.9+**、PyYAML、iproute2、CA 证书及 curl/wget。Python 3.9+ 用于不带 root 权限启动测试和节点子进程。
-- Linux 上 `/usr/bin/x-tunnel` 可使用既有可用二进制；新装默认拉取 `fsyllkn/x-tunnel` 已验证的 `openwrt-stable-go126-v1` Linux 版本，校验 ELF 架构与 SOCKS5 握手，已安装的内核不会被无故替换。
-- 该项目不是 VPN，也不接管主机透明代理路由；**不要同时让 X-Tunnel 与 sing-box 分别修改相同的策略路由/防火墙。**
-
-## 2. 一键部署与菜单
-
-```bash
-# 查看安装入口后在 Debian/Ubuntu root shell 中运行
-curl -fL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/main/quick-install.sh -o /tmp/xtunnel-linux.sh
-sudo sh /tmp/xtunnel-linux.sh
+telegram:
+  token: ""
+  chat_id: ""
 ```
 
-无参数默认进入交互菜单，**不直接安装或重启后台服务**；文件下载到 `/opt/x-tunnel-cf-ip-autotest`，生成缺失的私有配置模板。更新已有 Git 仓库前须在 `main` 分支，且没有妨碍 fast-forward 的未提交改动。
+`defaults.listen_hosts` 是唯一的 SOCKS5 监听地址来源；增加 LAN IP 时，务必限制防火墙允许的客户端。Bot 凭据可留空，不妨碍核心服务安装。测速阈值、Provider 路径、进程身份和 Telegram 代理均由此 YAML 读取，**不再被旧 .env 或 systemd EnvironmentFile 覆盖**。
 
-先使用菜单 **5** 编辑真实的 `x-tunnel.yaml`，然后菜单 **1** 安装核心服务。也可命令行执行：
+## 2. 安装与更新
 
-```bash
-cd /opt/x-tunnel-cf-ip-autotest
-sudo sh install.sh                 # 核心 SOCKS5 + Provider（不强制 Bot）
+要求 Debian/Ubuntu、systemd、Python 3.9+、PyYAML、iproute2。非特权 LXC 不需要 eBPF，不应关闭 AppArmor/seccomp 或添加特权能力。
+
+已授权的 Git 克隆：
+
+```sh
+cd /opt
+git clone --branch lxc --single-branch git@github.com:fsyllkn/x-tunnel-cf-ip-autotest.git
+cd x-tunnel-cf-ip-autotest
+cp -n x-tunnel.example.yaml x-tunnel.yaml
+chmod 600 x-tunnel.yaml
+vi x-tunnel.yaml
 sudo sh install.sh --with-speedtest
-sudo sh install.sh --with-bot      # 需要先填 speedtest-bot.env
-sudo sh install.sh --disable-bot   # 不关闭核心服务
-sudo sh install.sh --repair-kernel  # 显式修复内核，预检通过并备份后替换
 ```
 
-首次安装会备份/保留私有配置，服务路径根据源码实际安装目录生成。建议系统级快捷入口 `x-t` 或兼容的 `xtunnel-menu`（通过一键安装入口创建）。
+如果原目录已是 `lxc` 的 Git 克隆：
 
-手动查看服务：
-
-```bash
-systemctl status x-tunnel.service
-journalctl -u x-tunnel.service -n 80 --no-pager
-sudo ss -lntp | grep x-tunnel
-```
-
-常用菜单：**6** 核心启停、**7** Bot 启停、**8** 日志与测速环境检查、**9** 定时测速、**10** 立即完整测速、**15** 重启核心、**16** 单独重启 Bot、**17** 停止 SOCKS5 节点、**18** 导出多格式 Provider。停止核心或重启节点会短暂影响依赖 SOCKS5 的代理连接，不会停止 sing-box 服务。
-
-## 3. 每日 CF IP 测速时间：默认 18:00，可自定义
-
-系统使用 **主机的本地时区**，不再强制 Asia/Shanghai。默认 `18:00`；支持 `00:00`、`06:45`、`21:30`、`23:59`，不接受 `8:30`、`24:00` 或 `18:60`。
-
-菜单 `x-t` → **9** → **1** 可输入 `HH:MM`，直接回车使用保存的时间（未设置过时为 `18:00`）。也可直接修改，无须重新安装或重启 X-Tunnel：
-
-```bash
+```sh
 cd /opt/x-tunnel-cf-ip-autotest
+git branch --show-current
+git pull --ff-only origin lxc
+sudo sh install.sh --with-speedtest
+```
 
-# 验证 HH:MM
-python3 systemd/speedtest-timer.py validate 21:30
+**私有仓库 ZIP 手动上传：** 从 GitHub 选择 `lxc` 分支 → Code → Download ZIP，上传至 `/tmp/x-tunnel-lxc.zip`。如果目标目录不是 Git 工作树，可以在已有项目目录内执行：
 
-# 启用或修改每天 21:30，修改的是本项目的 systemd timer drop-in
-sudo python3 systemd/speedtest-timer.py enable 21:30
+```sh
+sudo sh quick-install.sh --core --archive=/tmp/x-tunnel-lxc.zip
+```
 
-# 当前状态；显示时间或 disabled
+该操作只读取本地 ZIP，不向公开 GitHub 请求私有仓库源码，会自动同步源码、迁移旧配置并按既有安装器重新部署 systemd；核心服务可能重启。**Git 工作树不要用 ZIP 强行覆盖，使用 `git pull --ff-only`。** 已安装且正常运行的 `/usr/bin/x-tunnel` 内核不因常规更新被替换；如需主动修复内核使用 `--repair-kernel`。
+
+新配置首次创建后需替换 YAML 中的示例地址/密钥再安装。旧的 `project.env`/Bot 文件会由安装器迁移，迁移失败则不部署系统服务或重启。重新安装前可自行备份私有 YAML。
+
+## 3. 新版菜单：与 OpenWrt 编号对齐
+
+`x-t`（或 `xtunnel-menu`）：
+
+```text
+【安装与常用】
+ 1 安装/修复    2 更新 lxc
+ 3 重启核心     4 查看日志
+ 5 核心管理     6 停止核心
+
+【配置管理】
+ 7 编辑统一 YAML   8 配置检查
+ 9 配置字段说明   10 YAML 备份
+
+【CF IP 测速】
+11 完整测速     12 systemd 定时测速
+
+【Telegram Bot】
+13 安装/启用    14 服务管理
+15 重启 Bot     16 关闭 Bot
+
+【导出维护】
+17 导出 SOCKS/Clash/V2Ray
+18 修复内核
+19 卸载（保留配置）
+ 0 退出
+```
+
+定时测速由 `systemd/speedtest-timer.py` 管理，每天本地时间 `HH:MM`，不会为了改时间而重启 X-Tunnel 核心：
+
+```sh
+sudo python3 systemd/speedtest-timer.py enable 18:00
 python3 systemd/speedtest-timer.py status
-
-# 关闭自动测速，保存自定义时间以备再次开启
 sudo python3 systemd/speedtest-timer.py disable
 ```
 
-也支持首次安装：
+Bot 的 `/topspeed` 会修改 YAML 的 `settings.target_mbps`；CF 测速同时使用文件锁保护写入。按最新 OpenWrt 行为，每个节点最多保留 **2 个 CF IP**，优先本轮新测速 IP；只有不足 2 个才用原节点或默认 IP 补位。没有合格新结果时保留旧配置，不再无限累加预设 IP。
 
-```bash
-sudo sh install.sh --enable-timer       # 默认 18:00 或已经保存的时间
-sudo sh install.sh --timer-at=06:45     # 每天 06:45
-```
+## 4. 进程 UID 与 ShellCrash 兼容
 
-定时器 override 文件：`/etc/systemd/system/x-tunnel-speedtest.timer.d/50-xtunnel-schedule.conf`。仅改写自己的 drop-in，保留其他 systemd timer；设置采用 `Persistent=false`，不会因为启用时间晚于当天计划时间就立即补跑一次。
+`settings.process_uid` 默认 `29002`；`settings.process_gid`：
+
+- `auto`：如果 `/etc/group` 精确存在 `shellcrash:x:7890`，Go 子进程及隔离 CF worker 的主 GID 使用 7890；否则 GID=UID。
+- `uid`：始终 GID=UID，关闭 ShellCrash 组兼容。
+- `7890`：明确要求该组存在，否则配置校验拒绝。
+
+systemd 层的 X-Tunnel 服务和 CF 测速服务是否启用 `Group=7890` drop-in 也遵循这个配置。不要用 **GID** 替代 reF1nd eBPF 的 `local.exclude_uid`（这是 UID 规则）。
 
 验证：
 
-```bash
-systemctl list-timers --all x-tunnel-speedtest.timer
-systemctl cat x-tunnel-speedtest.timer
-timedatectl
-journalctl -u x-tunnel-speedtest.service --no-pager -n 70
+```sh
+systemctl is-active x-tunnel.service
+grep '^shellcrash:' /etc/group || true
+for pid in $(pidof x-tunnel); do
+  echo "PID=$pid"; grep -E '^(Uid|Gid):' "/proc/$pid/status"
+done
+ss -lntp | grep ':32322' || true
+journalctl -u x-tunnel.service -n 80 --no-pager
 ```
 
-## 4. 与 sing-box eBPF 防回环
+组存在不等于防火墙已按该 GID 放行。与 ShellCrash 共存但仍遇到 fake-IP、SOCKS5 无监听时，要继续检查当前代理出站回环和真实 OUTPUT 规则，不能直接修改未知路由。
 
-在 `project.env` 设置 `X_TUNNEL_PROCESS_UID=29002`（默认值）；UID 不应与已有系统用户冲突。`X_TUNNEL_PROCESS_GID=auto` 默认根据 `/etc/group` 精确匹配 `shellcrash:7890`，匹配时让 Go 核心及隔离测速 worker 使用主 GID `7890`，否则仍使用 GID `29002`。可设为 `uid` 禁止 GID 切换，或设为 `7890` 要求组存在才启动。即使 Linux 上只启用了 sing-box 本机 eBPF、尚未开启单网口 LAN 网关，测速程序也会检查正在运行的 sing-box 服务，并使用 eBPF 排除的专用 UID 测试直连网络，避免 root 流量被代理而导致 CF 测速虚高。**SOCKS5 Go 核心与隔离 CF RTT/下载子进程保持非 root UID，主 GID 单独选择；管理进程依然是 root**。测速前还会检查 sing-box 的网关策略路由与 eBPF `local.exclude_uid` 配置，检查失败会拒绝继续，避免测速数据经过代理失真。
+## 5. LXC 测速安全性
 
-```bash
-getent passwd 29002 || true
-getent group 29002 || true
-pidof x-tunnel
-for pid in $(pidof x-tunnel); do echo "PID=$pid"; grep -E '^(Uid|Gid):' /proc/$pid/status; done
+LXC 纯 TPROXY 网关的特殊检测保留：核对 `singbox_one_arm`、`singbox_lxc_guard`、`fwmark 0x1536 lookup 53136`、活动 sing-box 服务、LXC 标记且无 local eBPF，才允许本机 OUTPUT 路径。其他模式会检查默认路由、非主表与未知策略；不盲目清空第三方路由。
 
-# 在 sing-box 主机配置中排除真实运行的 UID
-sudo sbctl filter exclude-user 29002
-sudo sbctl check
-sudo sbctl restart
-```
-
-更推荐先启动 X-Tunnel，再调用 sing-box 的 `align-xtunnel-ebpf.sh` 根据实际进程 UID 更新并备份 `exclude_uid`。**不要排除 root UID 0**。sing-box 的 X-Tunnel Provider 引用路径要与 X-Tunnel 导出的 `X_TUNNEL_PROVIDER_PATH` 一致。
-
-## 5. CF IP 测速与 Provider
-
-```bash
-cd /opt/x-tunnel-cf-ip-autotest
+```sh
 sudo python3 cfip_speedtest.py --no-apply --limit 20 --top 5
 sudo python3 cfip_speedtest.py --single-ip 1.1.1.1
 sudo python3 sync_singbox.py --export-only
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-测速结果默认保存到 `cfip-data/`，可由 Bot 和 systemd timer 自动触发。测速程序会区分普通 Linux 默认路由、已识别的 sing-box 网关策略路由、旧 ShellCrash 风格标记策略路由；未知策略规则下不会盲目改动系统路由。运行在代理网关上的直连成绩仍要用实际出口核实。
+测速写入、测速报告、systemd Bot、历史 JSON、Provider 导出和多节点监听均基于最新统一 YAML；不部署新的 Web 服务或代理内核。默认测速报告保存在 `cfip-data/`，请妥善保护历史数据。
 
-维护私有文件权限：
-
-```bash
-chmod 600 x-tunnel.yaml speedtest-bot.env
-chmod 700 cfip-data
-```
-
-不要将 `x-tunnel.yaml`、Bot Token、实际节点密钥、测速报告等上传公共仓库。
-
-## 6. 维护、更新及兼容限制
-
-```bash
-x-t
-# 选项 2 GitHub 更新 main 分支，可能重启 SOCKS5 核心
-sudo sh uninstall.sh         # 只删除本项目服务和定时器，保留运行配置
-```
-
-此 `lxc` 分支使用 systemd，普通 Linux 使用 `main` 分支，OpenWrt/iStoreOS 使用 `openwrt` 分支。**新版本已修复 systemd `Group=7890` 被 Python `subprocess.Popen(group=29002)` 覆盖的问题。** GID 7890 兼容仅在本机 `/etc/group` 存在准确的 ShellCrash 组时自动启用，不能仅凭 GID 判断 ShellCrash 放行规则是否生效，更不能用 GID 替代 reF1nd eBPF `local.exclude_uid` 的 UID 豁免。详见 [ShellCrash 兼容说明](SHELLCRASH-COMPATIBILITY.md)。
-
-GitHub Actions 覆盖 Python 编译、节点/测速路由回归、systemd 定时器 HH:MM 与导出格式的测试。**CI 不会验证你的真实 VPS、Cloudflare 出口、系统 eBPF 运行权限或实际带宽表现**；部署后仍需结合服务日志和实际网络检查。
+> `openwrt` 是 procd 路由器分支；`lxc` 是 systemd 容器分支。不要把 `openwrt` 的安装脚本直接覆盖到 LXC。本次整合只升级 X-Tunnel 代码，不修改配套 sing-box 或 ShellCrash 私有仓库。
