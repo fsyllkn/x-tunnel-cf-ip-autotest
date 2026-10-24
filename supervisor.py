@@ -284,13 +284,17 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
         nodes = nodes[:max_nodes]
 
     first_port = int(defaults.get("first_port", 32322))
-    configured_hosts = os.environ.get("X_TUNNEL_LISTEN_HOSTS")
-    if configured_hosts is None:
+    # project.env is normally created from project.env.example, which ships
+    # X_TUNNEL_LISTEN_HOSTS= (empty). Treat an empty value as *unset* so
+    # users can configure LAN listeners in x-tunnel.yaml without having
+    # their configuration silently replaced by 127.0.0.1.
+    configured_hosts = os.environ.get("X_TUNNEL_LISTEN_HOSTS", "").strip()
+    if not configured_hosts:
         listen_hosts = defaults.get("listen_hosts", ["127.0.0.1"])
     else:
         listen_hosts = [host.strip() for host in configured_hosts.split(",") if host.strip()]
         if not listen_hosts:
-            listen_hosts = ["127.0.0.1"]
+            raise ValueError("X_TUNNEL_LISTEN_HOSTS did not contain any IP addresses")
     if not isinstance(listen_hosts, list) or not listen_hosts:
         raise ValueError("defaults.listen_hosts must be a non-empty list")
     try:
