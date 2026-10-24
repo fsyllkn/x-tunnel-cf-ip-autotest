@@ -943,19 +943,34 @@ class TelegramProgress:
             for chunk in chunks[1:]:
                 self._request("sendMessage", chunk, parse_mode="HTML")
 
+def _cf_ip_values(value):
+    """Split either a comma-delimited string or a list of comma-delimited IPs."""
+    elements = value if isinstance(value, (list, tuple)) else [value]
+    return [
+        address
+        for item in elements if item is not None
+        for address in (part.strip() for part in str(item).split(","))
+        if address
+    ]
+
+
 def apply_ips(assignments):
+    """Replace each matched node's CF IP list with at most two addresses.
+
+    Use up to two newly measured addresses first; only a shortage can be
+    filled from the node's existing list and then defaults.cfip. A node with
+    no new qualifying addresses remains byte-for-byte unchanged.
+    """
     # Shared lock with Bot /topspeed and migration prevents lost CF IP updates.
     with config_lock():
         import yaml
 
+        if not assignments:
+            return False
         content = CONFIG_FILE.read_text(encoding="utf-8")
         document = yaml.safe_load(content) or {}
         defaults = document.get("defaults") or {}
-        default_ips = [
-            value.strip()
-            for value in str(defaults.get("cfip", "")).split(",")
-            if value.strip()
-        ]
+        default_ips = _cf_ip_values(defaults.get("cfip", ""))
         known_names = {
             row.split("|", 1)[0].strip()
             for row in document.get("nodes", [])
@@ -966,7 +981,8 @@ def apply_ips(assignments):
             raise ValueError("node(s) not found in x-tunnel.yaml: %s" % ", ".join(sorted(missing)))
 
         updated_lines = []
-        changed = False
+        matched_names = set()
+        changed_nodes = {}
         for line in content.splitlines(keepends=True):
             match = re.fullmatch(r'(\s*-\s*)((?:"(?:\\.|[^"\\])*"))(\s*(?:#.*)?\s*)(\r?\n)?', line)
             if not match:
@@ -977,36 +993,51 @@ def apply_ips(assignments):
             if fields[0] not in assignments:
                 updated_lines.append(line)
                 continue
+            name = fields[0]
+            matched_names.add(name)
+            newly_measured = list(dict.fromkeys(_cf_ip_values(assignments[name])))[:MAX_NODE_CF_IPS]
+            if not newly_measured:
+                # No qualifying result for this node: preserve its old list
+                # and original YAML line without injecting defaults.cfip.
+                updated_lines.append(line)
+                continue
+
             while len(fields) < 4:
                 fields.append("")
-            assigned_ips = assignments[fields[0]]
-            if isinstance(assigned_ips, (list, tuple)):
-                assigned_ips = [str(value).strip() for value in assigned_ips if str(value).strip()]
-            else:
-                assigned_ips = [str(assigned_ips).strip()] if str(assigned_ips).strip() else []
-            existing_ips = [
-                value.strip()
-                for value in fields[3].split(",")
-                if value.strip()
-            ]
-            # Keep the known configuration as fallback: HTTP speed alone does not
-            # prove that a CF edge will carry this node's WebSocket tunnel reliably.
-            fields[3] = ",".join(dict.fromkeys(assigned_ips + existing_ips + default_ips))
+            existing_ips = _cf_ip_values(fields[3])
+            effective_ips = newly_measured[:]
+            for fallback in existing_ips + default_ips:
+                if len(effective_ips) >= MAX_NODE_CF_IPS:
+                    break
+                if fallback not in effective_ips:
+                    effective_ips.append(fallback)
+            fields[3] = ",".join(effective_ips)
             new_row = "|".join(fields)
+            if new_row == row:
+                updated_lines.append(line)
+                continue
             newline = match.group(4) or ""
             updated_lines.append(
                 match.group(1) + json.dumps(new_row, ensure_ascii=False) + match.group(3) + newline
             )
-            changed = True
+            changed_nodes[name] = (len(newly_measured), len(effective_ips) - len(newly_measured))
 
-        if not changed:
-            raise ValueError("could not locate quoted node rows in x-tunnel.yaml")
-        mode = CONFIG_FILE.stat().st_mode & 0o777
+        unparsed = set(assignments) - matched_names
+        if unparsed:
+            raise ValueError("could not locate double-quoted node row(s) in x-tunnel.yaml: %s" %
+                             ", ".join(sorted(unparsed)))
+        if not changed_nodes:
+            return False
+
+        # Preserve the atomic, permission-restricted YAML update. Unchanged
+        # files are never rewritten, preventing unnecessary supervisor restarts.
         descriptor, temporary = tempfile.mkstemp(prefix=".x-tunnel-config-", dir=CONFIG_FILE.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 output.write("".join(updated_lines))
-            os.chmod(temporary, mode)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
             os.replace(temporary, CONFIG_FILE)
         except Exception:
             try:
@@ -1014,11 +1045,13 @@ def apply_ips(assignments):
             except FileNotFoundError:
                 pass
             raise
-        for node_name in assignments:
+        for name, (fresh, fallback) in changed_nodes.items():
             print(
-                "updated %s CF IP in x-tunnel.yaml with configured fallback IPs; "
-                "x-tunnel will reload automatically" % node_name
+                "updated %s CF IP in x-tunnel.yaml: %d measured + %d fallback "
+                "(maximum %d); x-tunnel will reload automatically" %
+                (name, fresh, fallback, MAX_NODE_CF_IPS)
             )
+        return True
 
 
 def configured_node_names():
