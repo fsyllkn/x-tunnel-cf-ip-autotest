@@ -71,7 +71,7 @@ class OpenWrtMenuLayoutTest(unittest.TestCase):
         # Chinese ideographs are wide; right-hand descriptions must begin
         # at the same terminal-cell position on every paired menu row.
         screen = parts()[0]
-        rows = re.findall(r"(?m)^\\s*say '([^']*)'\\s*$", screen)
+        rows = re.findall(r"(?m)^\s*say '([^']*)'\s*$", screen)
         menu_entries = 0
         paired_entries = 0
         def cells(value):
@@ -81,9 +81,9 @@ class OpenWrtMenuLayoutTest(unittest.TestCase):
             if line.startswith("  【"):
                 self.assertEqual(line[:2], "  ")
                 continue
-            if not re.match(r"^\\s*\\d{1,2}\\) ", line):
+            if not re.match(r"^\s*\d{1,2}\) ", line):
                 continue
-            choices = list(re.finditer(r"\\d{1,2}\\) ", line))
+            choices = list(re.finditer(r"\d{1,2}\) ", line))
             menu_entries += len(choices)
             self.assertEqual(cells(line[:choices[0].end()]), 6)
             self.assertLessEqual(cells(line), 61)
