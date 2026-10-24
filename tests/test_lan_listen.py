@@ -1,7 +1,4 @@
-"""Regression tests: a blank OpenWrt project.env must honor YAML LAN listeners.
-
-No network sockets are opened and no X-Tunnel processes are started.
-"""
+"""Single-source LAN SOCKS5 listener regressions: only defaults.listen_hosts."""
 import os
 import tempfile
 import unittest
@@ -16,9 +13,7 @@ class LanListenerConfigTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.config = self.root / "x-tunnel.yaml"
-        self.env = self.root / "project.env"
+        self.config = Path(self.tmp.name) / "x-tunnel.yaml"
         self.config.write_text(
             """defaults:
   token: test-token
@@ -28,20 +23,21 @@ class LanListenerConfigTest(unittest.TestCase):
     - "127.0.0.1"
     - "192.168.68.11"
   first_port: 32322
+settings:
+  process_uid: 29002
 nodes:
   - "hk|wss://example.com/about:443||||"
 """, encoding="utf-8"
         )
 
-    def resolve(self, env_content):
-        self.env.write_text(env_content, encoding="utf-8")
-        with mock.patch.object(project_settings, "PROJECT_ENV_FILE", self.env), \
+    def resolve(self):
+        with mock.patch.object(project_settings, "CONFIG_FILE", self.config), \
              mock.patch.object(supervisor, "CONFIG", self.config), \
-             mock.patch.dict(os.environ, {}, clear=True):
+             mock.patch.dict(os.environ, {"X_TUNNEL_LISTEN_HOSTS": "192.168.68.21"}):
             return supervisor.read_specs(check_port_availability=False)
 
-    def test_default_env_blank_uses_yaml_lan_listener(self):
-        specs = self.resolve("X_TUNNEL_LISTEN_HOSTS=\nX_TUNNEL_PROCESS_UID=29002\n")
+    def test_yaml_is_authoritative_even_with_old_env_override(self):
+        specs = self.resolve()
         self.assertEqual(specs[0]["listen_hosts"], ["127.0.0.1", "192.168.68.11"])
         self.assertEqual(specs[0]["port"], 32322)
         command = supervisor.command_for(specs[0])
@@ -50,29 +46,18 @@ nodes:
             command,
         )
 
-    def test_missing_env_uses_yaml(self):
-        specs = self.resolve("X_TUNNEL_PROCESS_UID=29002\n")
-        self.assertEqual(specs[0]["listen_hosts"], ["127.0.0.1", "192.168.68.11"])
-
-    def test_explicit_env_overrides_yaml(self):
-        specs = self.resolve("X_TUNNEL_LISTEN_HOSTS=192.168.68.21,127.0.0.1\n")
-        self.assertEqual(specs[0]["listen_hosts"], ["192.168.68.21", "127.0.0.1"])
-
-    def test_default_remains_local_only_without_any_yaml_listeners(self):
+    def test_missing_yaml_listen_defaults_to_localhost(self):
         source = self.config.read_text(encoding="utf-8")
-        self.config.write_text(
-            source.replace(
-                '  listen_hosts:\n    - "127.0.0.1"\n    - "192.168.68.11"\n',
-                "",
-            ),
-            encoding="utf-8",
-        )
-        specs = self.resolve("X_TUNNEL_LISTEN_HOSTS=\n")
-        self.assertEqual(specs[0]["listen_hosts"], ["127.0.0.1"])
+        self.config.write_text(source.replace(
+            '  listen_hosts:\n    - "127.0.0.1"\n    - "192.168.68.11"\n', ""
+        ), encoding="utf-8")
+        self.assertEqual(self.resolve()[0]["listen_hosts"], ["127.0.0.1"])
 
-    def test_invalid_nonempty_env_does_not_silently_fallback(self):
-        with self.assertRaisesRegex(ValueError, "did not contain any IP addresses"):
-            self.resolve("X_TUNNEL_LISTEN_HOSTS=,,,\n")
+    def test_non_numeric_yaml_listener_is_rejected(self):
+        source = self.config.read_text(encoding="utf-8")
+        self.config.write_text(source.replace("192.168.68.11", "lan.example.org"), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "numeric IP"):
+            self.resolve()
 
 
 if __name__ == "__main__":
