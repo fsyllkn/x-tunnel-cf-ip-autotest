@@ -31,7 +31,7 @@ sh /tmp/xtunnel-openwrt.sh
 1. 选择 **3 编辑统一 YAML 配置**，填写真实节点地址、Token、CF IP，以及必要的监听地址。
 2. 选择 **1 安装/修复核心服务**。安装器按需补齐 Python 核心依赖，并启动 `x-tunnel` procd 服务。
 3. 需要 Telegram Bot 时，在同一个 `x-tunnel.yaml` 的 `telegram` 和 `settings` 下填写凭据及代理，再选 **13 安装/启用 Telegram Bot**。
-4. 使用菜单 **8 查看日志**，或在 SSH 中查看服务状态。不要把“procd 运行中”直接等同于所有节点均已连通。
+4. 使用菜单 **4 查看日志**，或在 SSH 中查看服务状态。不要把“procd 运行中”直接等同于所有节点均已连通。
 
 不需要 Bot 的设备可将 `telegram.token` 和 `telegram.chat_id` 留空，不需安装 Bot/测速专用依赖。
 
@@ -53,28 +53,36 @@ sh menu.sh
 当前菜单选项：
 
 ```text
- 1) 安装/修复核心服务       2) GitHub 更新 OpenWrt 分支
- 3) 编辑统一 YAML 配置     4) 查看配置字段说明
- 5) 备份统一 YAML 配置     6) X-Tunnel 服务管理
- 7) Telegram Bot 服务管理  8) 查看日志
- 9) 定时测速管理          10) 立即运行完整测速
-11) 配置检查              12) 卸载服务（保留配置）
-13) 安装/启用 Telegram Bot 14) 关闭 Bot 节省内存
-15) 一键重启 X-Tunnel     16) 一键重启 Telegram Bot
-17) 停止 X-Tunnel 核心    18) 导出 Clash/V2Ray/SOCKS5 节点
-19) 安装已验证 Go 1.26 稳定内核
+【安装与常用】
+ 1) 安装/修复核心服务          2) 更新 GitHub openwrt 分支
+ 3) 重启 X-Tunnel             4) 查看日志
+ 5) X-Tunnel 服务管理         6) 停止 X-Tunnel 核心
+【配置管理】
+ 7) 编辑统一 YAML 配置         8) 配置检查
+ 9) 查看配置字段说明          10) 备份统一 YAML 配置
+【CF IP 测速】
+11) 立即运行完整测速          12) 定时测速管理
+【Telegram Bot】
+13) 安装/启用 Telegram Bot   14) Telegram Bot 服务管理
+15) 重启 Telegram Bot        16) 关闭 Bot 节省内存
+【导出与维护】
+17) 导出 Clash/V2Ray/SOCKS5 节点
+18) 安装已验证 Go 1.26 稳定内核
+19) 卸载服务（保留配置）
  0) 退出
 ```
 
-- **6 / 7**：启动、停止、重启及开机自启管理。
-- **9**：每日 CF IP 定时测速，采用设备本地时间的 24 小时制 `HH:MM`。默认 **18:00**，直接回车采用默认时间；已有任务再次设置时默认显示上一次保存的时间。可以输入 `06:45`、`21:30`、`23:59`，修改会替换已有 cron 作业，不产生重复任务。测速依赖已安装时，修改定时时间不会重启 X-Tunnel 核心。
-- **15**：仅重启 X-Tunnel 核心与其节点，现有连接会短暂中断。
-- **16**：仅重启 Telegram Bot，不重启 X-Tunnel 节点。
-- **17**：只停止 X-Tunnel 核心和全部 SOCKS5 节点，Bot/定时测速不变。
-- **18**：只刷新 Clash/Mihomo YAML、V2Ray/Xray 出站片段、SOCKS5 URI 文件，不重启节点。
-- **19**：下载与原始可用 Linux AMD64 内核 SHA-256 完全一致的 Go 1.26 稳定内核，先做本地 SOCKS5 握手验证，备份旧内核后替换并重新启动核心；Bot 不受影响。
-- **2 GitHub 更新**：下载最新代码并调用核心安装程序，**会重启核心服务**；不会自动替你重新配置或重启 Bot。
-- **14 关闭 Bot**：停止 Bot 并取消其开机自启，不重启 X-Tunnel 核心服务。
+- **5 / 14**：分别管理 X-Tunnel 核心和 Telegram Bot 的启动、停止、重启、开机自启。
+- **3**：快速重启 X-Tunnel 核心及其节点，SOCKS5 连接会短暂中断。
+- **4**：查看核心、CF 测速、Bot 日志、服务状态以及测速环境自检（子菜单选项 5）。
+- **6**：只停止 X-Tunnel 核心和全部 SOCKS5 节点，Bot/定时测速不变。
+- **7 / 8 / 9 / 10**：统一 YAML 编辑、校验、字段说明与备份。
+- **11 / 12**：立即运行 CF IP 完整测速或管理每日定时测速（本地 24 小时制 `HH:MM`，默认 18:00）。
+- **13 / 15 / 16**：安装/启用、单独重启或停用 Telegram Bot，不把 Bot 和核心服务混为一体。
+- **17**：导出 Clash/Mihomo YAML、V2Ray/Xray 出站片段、SOCKS5 URI 文件，不重启节点。
+- **18**：安装已验证 Go 1.26 稳定内核，先验证握手，再备份替换并重启核心。
+- **19**：卸载本项目服务，保留私有配置和测速记录。
+- **2**：更新 GitHub openwrt 代码并重新部署，会重启 X-Tunnel 核心。
 
 统一配置使用 `vi` 编辑 `x-tunnel.yaml`；修改前会备份到 `cfip-data/config-backups/`，统一 YAML（包含敏感 Token）及备份均使用 `0600` 权限。supervisor 会检测配置变化并协调需要变更的节点；Bot 的账号/代理修改后请单独重启 Bot。
 
@@ -192,7 +200,7 @@ for spec in read_specs(check_port_availability=False):
 PY
 
 ss -lntp | grep 32322
-# 维护窗口内重启已有核心可使用 x-t 菜单 15
+# 维护窗口内重启已有核心可使用 x-t 菜单 3
 ```
 
 局域网另一台设备测试：`curl --socks5-hostname 192.168.68.11:32322 https://api.ipify.org`。端口可能因占用被重新分配，应以日志和 `ss` 实际监听为准。
@@ -202,7 +210,7 @@ ss -lntp | grep 32322
 1. 更新 `openwrt` 分支代码（`x-t` 菜单选项 2）。
 2. 安装器在重启服务之前执行 `python3 migrate_config.py`：读取旧的 `project.env` 和 `speedtest-bot.env`，将 UID、Provider、代理、测速目标、Bot 凭据合入 YAML；如果 YAML 已有显式值，保留 YAML。旧 env 的非空监听地址只会在 YAML 仍为默认 localhost 时迁移。
 3. 安全写入 YAML、保留原始双引号节点行和注释；旧文件和原 YAML 保存为权限 `0600` 的备份，并从项目根目录移走，避免旧变量再次覆盖。
-4. 检查：`python3 migrate_config.py` 再次运行应只提示“一个 YAML 生效”；或使用 `x-t` 菜单 11 检查配置。迁移失败时不会覆盖运行配置、不会重启服务。
+4. 检查：`python3 migrate_config.py` 再次运行应只提示“一个 YAML 生效”；或使用 `x-t` 菜单 8 检查配置。迁移失败时不会覆盖运行配置、不会重启服务。
 
 迁移期间不展示 Token。**升级前仍建议自行备份 YAML**；旧版 `project.env.example` / `speedtest-bot.env.example` 不再作为运行配置模板使用。
 
@@ -214,8 +222,8 @@ ss -lntp | grep 32322
 | 核心（默认） | 菜单 **1** 或 `--core` | 安装 Python 核心依赖、X-Tunnel 内核、supervisor 与 Provider；不要求 Bot 凭据 |
 | 核心 + Bot | 菜单 **13** 或 `--with-bot` | 增加 Telegram Bot 和测速需要的 HTTPS/IDNA、`ip-full` 等依赖，并启动 Bot |
 | 测速依赖 | `--with-speedtest` | 安装测速依赖，不启用 Bot |
-| 定时测速 | 菜单 **9**、`--enable-timer` 或 `--timer-at=HH:MM` | 设置设备**本地时间每日定时测速**；默认 18:00，可输入 24 小时制 HH:MM；保留其他 cron 作业 |
-| 关闭 Bot | 菜单 **14** 或 `--disable-bot` | 停用已安装 Bot；菜单选项 14 不重启核心，安装器的 `--disable-bot` 会重新安装/启动核心 |
+| 定时测速 | 菜单 **12**、`--enable-timer` 或 `--timer-at=HH:MM` | 设置设备**本地时间每日定时测速**；默认 18:00，可输入 24 小时制 HH:MM；保留其他 cron 作业 |
+| 关闭 Bot | 菜单 **16** 或 `--disable-bot` | 停用已安装 Bot；菜单选项 16 不重启核心，安装器的 `--disable-bot` 会重新安装/启动核心 |
 
 无交互终端（自动化脚本/远程任务）时，使用明确参数：
 
@@ -241,7 +249,7 @@ OpenWrt 分支的 `supervisor.py` **默认仅将 X-Tunnel Go 子进程以 UID/GI
 - 不要求 `adduser`，Linux 数字 UID 可以直接用于进程；安装前确认 29002 未被其他系统用户占用。
 - 每个节点以 `runtime/engines/<hash>-<port>/` 作为独立工作目录，归 UID 29002 所有，便于写入 GeoIP 等本地缓存且避免并发临时文件冲突。
 - 在 `x-tunnel.yaml` 的 `settings.process_uid` 中设置专用 UID（默认为 29002）；更换 UID 后同步调整 sing-box `inbounds[].local.exclude_uid`，并重启 X-Tunnel 核心。
-- **仅更新源码不会自动替换正在运行的 root 内核进程**。安排维护窗口，使用 `x-t` 菜单 **15** 单独重启核心，Bot 无需重启。切换时 SOCKS5 连接会暂时中断。
+- **仅更新源码不会自动替换正在运行的 root 内核进程**。安排维护窗口，使用 `x-t` 菜单 **3** 单独重启核心，Bot 无需重启。切换时 SOCKS5 连接会暂时中断。
 
 在 OpenWrt 检查子进程实际 UID：
 
@@ -292,7 +300,7 @@ git switch openwrt
 
 ### 卸载
 
-在菜单选择 **12**，或运行：
+在菜单选择 **19**，或运行：
 
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
@@ -315,7 +323,7 @@ logread | tail -n 80
 
 只安装核心时，Bot 服务不存在属于正常情况。procd 显示 `running` 说明服务进程存在，还需结合 SOCKS5 端口及连通性检测。OpenWrt 的 `logread` 将某些子进程输出归入 `daemon.err`，但含 `INFO`、ECH 查询或通道就绪的行不必然是故障。
 
-`x-t` → **8 查看日志** 改为独立四个入口：**1 X-Tunnel 连接日志**、**2 CF IP 测速日志**、**3 Telegram Bot 日志**、**4 服务状态**（5 为测速环境自检）。核心和 Bot 的 OpenWrt 日志按当前服务脚本对应的 Python PID 精确筛选 syslog 标签 `python3[PID]:`，不会再显示 sing-box 或 dnsmasq 的日志；CF 测速只显示 `cfip-data/openwrt-speedtest.log`。因为 procd 默认按 `python3[PID]` 标记继承的 Go 内核 stdout，这个筛选也能显示 X-Tunnel 的 smux/客户端连接行。**如果核心已停止，无法通过当前 PID 确定旧 syslog 的归属，菜单会提示而不会显示混杂的系统日志**；不会因为查看日志而启动服务或重新测速。
+`x-t` → **4 查看日志** 提供以下子菜单：**1 X-Tunnel 连接日志**、**2 CF IP 测速日志**、**3 Telegram Bot 日志**、**4 服务状态**（5 为测速环境自检）。核心和 Bot 的 OpenWrt 日志按当前服务脚本对应的 Python PID 精确筛选 syslog 标签 `python3[PID]:`，不会再显示 sing-box 或 dnsmasq 的日志；CF 测速只显示 `cfip-data/openwrt-speedtest.log`。因为 procd 默认按 `python3[PID]` 标记继承的 Go 内核 stdout，这个筛选也能显示 X-Tunnel 的 smux/客户端连接行。**如果核心已停止，无法通过当前 PID 确定旧 syslog 的归属，菜单会提示而不会显示混杂的系统日志**；不会因为查看日志而启动服务或重新测速。
 
 
 ### 稳定 Go 内核：已按原始源码重新构建并验证
@@ -332,12 +340,12 @@ ae3a79a4d2a6a8d7e1377afb2e022c5ed75b0157a694fb6aead9d86ab873ccc2
 
 **重要：不要再使用先前的 `openwrt-socks5-v1` 二进制。** 那是由另一套 `cmd/x-tunnel/` 多文件源码构建，不是目前经过实机验证的原始内核。新构建始终使用 `go build ... ./x-tunnel.go`，无 TUN、GeoIP/GeoSite、DNS 劫持、系统路由或透明代理接管。
 
-OpenWrt 菜单选择 **19）安装已验证 Go 1.26 稳定内核**，默认下载固定版本 `openwrt-stable-go126-v1`。对于 AMD64，安装器还会核对上述 SHA-256，检测 ELF 架构和 CLI，并在本机进行实际 SOCKS5 握手预检；全部通过后才备份并替换旧内核，重启核心，不影响单独运行的 Bot 服务。
+OpenWrt 菜单选择 **18）安装已验证 Go 1.26 稳定内核**，默认下载固定版本 `openwrt-stable-go126-v1`。对于 AMD64，安装器还会核对上述 SHA-256，检测 ELF 架构和 CLI，并在本机进行实际 SOCKS5 握手预检；全部通过后才备份并替换旧内核，重启核心，不影响单独运行的 Bot 服务。
 
 步骤：
 
 1. 通过 `x-t` 菜单 **2）更新 OpenWrt 管理脚本**，然后返回菜单。
-2. 如果当前 Go 内核已经稳定运行且哈希匹配，则**无需再次替换**。只有需要恢复、安装或切换版本时，才使用菜单 **19**。
+2. 如果当前 Go 内核已经稳定运行且哈希匹配，则**无需再次替换**。只有需要恢复、安装或切换版本时，才使用菜单 **18**。
 3. 执行 `python3 openwrt/healthcheck.py`，预期输出 `PASS: 6/6 SOCKS5 endpoints accept handshakes`（六个节点时）。再通过 `curl --socks5-hostname 127.0.0.1:32322 https://api.ipify.org` 验证端到端访问。
 
 也可执行：
@@ -394,9 +402,9 @@ cd /overlay/x-tunnel-cf-ip-autotest
 python3 sync_singbox.py --export-only
 ```
 
-也可以在 `x-t` 主菜单选择 **18) 导出 Clash/V2Ray/SOCKS5 节点**。如果自定义了 `X_TUNNEL_PROVIDER_PATH`，伴随文件会保存在该 JSON 的相同目录下。使用测试命令 `python3 -m unittest discover -s tests -p test_multi_export.py` 可检查格式有效性（需要 PyYAML；测试不会启动 X-Tunnel）。
+也可以在 `x-t` 主菜单选择 **17) 导出 Clash/V2Ray/SOCKS5 节点**。如果在统一 YAML 中自定义了 `settings.provider_path`，伴随文件会保存在该 JSON 的相同目录下。使用测试命令 `python3 -m unittest discover -s tests -p test_multi_export.py` 可检查格式有效性（需要 PyYAML；测试不会启动 X-Tunnel）。
 
-**停止服务快捷项：** 主菜单 **17) 停止 X-Tunnel 核心** 会先询问确认，随后停止核心 supervisor 和全部 SOCKS5 子进程；不会停止 Telegram Bot、关闭定时测速、删除节点或修改 DNS/路由。需要重新启动可进入主菜单 **6) X-Tunnel 服务管理** → **1) 启动**。
+**停止服务快捷项：** 主菜单 **6) 停止 X-Tunnel 核心** 会先询问确认，随后停止核心 supervisor 和全部 SOCKS5 子进程；不会停止 Telegram Bot、关闭定时测速、删除节点或修改 DNS/路由。需要重新启动可进入主菜单 **5) X-Tunnel 服务管理** → **1) 启动**。
 
 ### Provider 文件在哪里
 
@@ -431,14 +439,14 @@ ModuleNotFoundError: No module named 'decimal'
 
 `openwrt` 分支已将测速所用的均值、中位数和总体标准差计算改为不依赖 `statistics`，**不需要单独安装 `python3-decimal` 来解决这一个错误**。安装器在启用测速/Bot 时会进行模块导入预检，Bot 启动任务后会短暂确认后台进程是否立即退出。
 
-更新代码后（仅运行一键入口、进入菜单不会重启现有核心服务），先在 `x-t` → **8 查看日志** → **4 测速环境自检** 中检查。也可以在 SSH 手动检查，不会启动测速或修改路由：
+更新代码后（仅运行一键入口、进入菜单不会重启现有核心服务），先在 `x-t` → **4 查看日志** → **5 测速环境自检** 中检查。也可以在 SSH 手动检查，不会启动测速或修改路由：
 
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
 python3 -c 'import cfip_speedtest; print("测速模块导入正常")'
 ```
 
-若通过，再在菜单选择 **16** 单独重启 Bot，使其加载新版命令处理程序；然后向 Telegram 发送 `/speedtest`。检查实际后台任务日志：
+若通过，再在菜单选择 **15** 单独重启 Bot，使其加载新版命令处理程序；然后向 Telegram 发送 `/speedtest`。检查实际后台任务日志：
 
 ```sh
 tail -n 80 /overlay/x-tunnel-cf-ip-autotest/cfip-data/openwrt-speedtest.log
@@ -453,7 +461,7 @@ logread | grep -E 'Bot received|Speed-test bot|Telegram polling' | tail -n 30
 
 **与 reF1nd sing-box 单网口网关共存（新）：** 若 `ip -4 rule show` 包含本项目定义的 `15360: from all fwmark 0x1536 lookup 53136`，测速器将识别为 `singbox-gateway`，并验证 table 53136 的本地路由、`inet singbox_one_arm` 表和 `/opt/sing-box/config/config.json` 的 eBPF `local.exclude_uid`。CF RTT/下载测试在 X-Tunnel 专用非 root UID（默认 `29002`）的子进程中运行，以避开本机 eBPF 捕获；主控制进程仍以 root 管理配置、报告及锁。**不会增删 sing-box 的策略路由，也不会停止其内核**。若 UID 未被排除或网络状态不匹配，测速会安全拒绝执行，避免测得代理后的假成绩。运行中的 sing-box 是否已加载最新 UID 规则仍应以实机检查为准。
 
-在运行完整测速之前，可通过 `x-t` → **8 查看日志** → **4 测速环境自检** 进行只读检查；或者执行：
+在运行完整测速之前，可通过 `x-t` → **4 查看日志** → **5 测速环境自检** 进行只读检查；或者执行：
 
 ```sh
 cd /overlay/x-tunnel-cf-ip-autotest
