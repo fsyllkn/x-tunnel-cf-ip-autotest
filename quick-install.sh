@@ -1,10 +1,11 @@
 #!/bin/sh
-# Interactive X-Tunnel bootstrap for OpenWrt/procd (apk or opkg).
+# PVE LXC / Debian Ubuntu systemd bootstrap; Git checkout or private local archive.
 set -eu
 
-REPO_ARCHIVE='https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/archive/refs/heads/main.tar.gz'
+REPO_ARCHIVE='https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/archive/refs/heads/lxc.tar.gz'
 REPO_NAME=x-tunnel-cf-ip-autotest
-BRANCH=main
+BRANCH=lxc
+ARCHIVE_FILE=''
 # No arguments opens an interactive SSH installation and management menu.
 # Explicit flags keep noninteractive installation available for automation.
 INSTALL_ARGS=""
@@ -12,12 +13,13 @@ MENU_MODE=1
 for arg in "$@"; do
  case "$arg" in
    --menu) MENU_MODE=1 ;;
+   --archive=*) ARCHIVE_FILE=${arg#*=}; [ -n "$ARCHIVE_FILE" ] || { echo "Empty --archive= path" >&2; exit 2; } ;;
    --core) MENU_MODE=0 ;;
    --with-bot|--with-speedtest|--enable-timer|--disable-bot|--repair-kernel|--timer-at=*)
      MENU_MODE=0
      INSTALL_ARGS="$INSTALL_ARGS $arg" ;;
    -h|--help)
-     echo "Usage: sh quick-install.sh [--menu|--core|--with-bot|--with-speedtest|--enable-timer|--timer-at=HH:MM|--disable-bot|--repair-kernel]"
+     echo "Usage: sh quick-install.sh [--menu|--core|--archive=/path/lxc.zip|--with-bot|--with-speedtest|--enable-timer|--timer-at=HH:MM|--disable-bot|--repair-kernel]"
      echo "No arguments: interactive installation/management menu (SSH terminal required)."
      exit 0 ;;
    *) echo "Unknown option: $arg" >&2; exit 2 ;;
@@ -50,32 +52,51 @@ case "$PROJECT_DIR" in
 esac
 info "Platform: $PLATFORM; directory: $PROJECT_DIR"
 
-# Main is for systemd Linux; no OpenWrt networking settings are changed.
-command -v tar >/dev/null 2>&1 || fail 'tar required.'
-command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || fail 'curl or wget required.'
-
-TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/xtunnel-setup.XXXXXX") || fail 'Cannot create temporary directory.'
+# Existing Git checkouts update with git; private archives can be supplied
+# locally without GitHub credentials. Never switch branches automatically.
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/xtunnel-setup.XXXXXX") || fail 'Cannot create staging directory.'
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
-ARCHIVE=$TMP_DIR/source.tar.gz
-if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --connect-timeout 20 -o "$ARCHIVE" "$REPO_ARCHIVE" || fail 'Failed to download source archive.'
-elif command -v wget >/dev/null 2>&1; then
-    wget -T 20 -O "$ARCHIVE" "$REPO_ARCHIVE" || fail 'Failed to download source archive.'
-else
-    fail 'Install curl or wget.'
-fi
-tar -xzf "$ARCHIVE" -C "$TMP_DIR" || fail 'Invalid source archive.'
-SOURCE_DIR=$TMP_DIR/$REPO_NAME-$BRANCH
-[ -f "$SOURCE_DIR/install.sh" ] || fail 'Source archive is missing install.sh.'
-
-if [ -d "$PROJECT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
-    info 'Existing Git checkout found: updating with git pull --ff-only.'
+if [ -d "$PROJECT_DIR/.git" ]; then
+    [ -z "$ARCHIVE_FILE" ] || fail 'Git checkout detected; update with git pull instead of --archive.'
+    command -v git >/dev/null 2>&1 || fail 'git required for updating a Git checkout.'
     current_branch=$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-    [ "$current_branch" = "$BRANCH" ] || fail "Existing Git checkout uses branch $current_branch; switch explicitly to main after backing up configs."
-    git -C "$PROJECT_DIR" pull --ff-only || fail 'Git update failed. Fix local changes or remote access before retrying.'
+    [ "$current_branch" = "$BRANCH" ] ||
+        fail "Existing Git checkout uses $current_branch (expected lxc); refusing branch switch."
+    git -C "$PROJECT_DIR" pull --ff-only origin "$BRANCH" ||
+        fail 'Git pull failed; check private repo permissions and local modifications.'
 else
+    command -v tar >/dev/null 2>&1 || fail 'tar required.'
+    if [ -n "$ARCHIVE_FILE" ]; then
+        [ -f "$ARCHIVE_FILE" ] || fail 'Local archive not found.'
+        ARCHIVE=$ARCHIVE_FILE
+        info "Using private branch archive: $ARCHIVE"
+    else
+        command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 ||
+            fail 'Download an lxc ZIP or install curl/wget.'
+        ARCHIVE="$TMP_DIR/source.tar.gz"
+        info 'Fetching lxc branch. For a private repository use --archive=/path/lxc.zip.'
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL --retry 3 --connect-timeout 20 -o "$ARCHIVE" "$REPO_ARCHIVE" ||
+                fail 'Private branch download failed; supply --archive=.'
+        else
+            wget -T 20 -O "$ARCHIVE" "$REPO_ARCHIVE" ||
+                fail 'Private branch download failed; supply --archive=.'
+        fi
+    fi
+    case "$ARCHIVE" in
+        *.zip)
+            command -v unzip >/dev/null 2>&1 || fail 'unzip required for ZIP source.'
+            unzip -q "$ARCHIVE" -d "$TMP_DIR" || fail 'ZIP extraction failed.' ;;
+        *.tar.gz|*.tgz)
+            tar -xzf "$ARCHIVE" -C "$TMP_DIR" || fail 'Tar extraction failed.' ;;
+        *) fail 'Archive must have .zip, .tar.gz or .tgz suffix.' ;;
+    esac
+    SOURCE_DIR="$TMP_DIR/$REPO_NAME-$BRANCH"
+    [ -f "$SOURCE_DIR/install.sh" ] && [ -f "$SOURCE_DIR/migrate_config.py" ] ||
+        fail 'Source archive is not the lxc branch (missing install.sh/migrate_config.py).'
     mkdir -p "$PROJECT_DIR"
-    cp -R "$SOURCE_DIR"/. "$PROJECT_DIR"/ || fail 'Failed to copy project files.'
+    cp -R "$SOURCE_DIR"/. "$PROJECT_DIR"/ ||
+        fail 'Source copy failed; services were not restarted.'
 fi
 
 created=0
@@ -83,8 +104,16 @@ if [ ! -f "$PROJECT_DIR/x-tunnel.yaml" ]; then
  (umask 077; cp "$PROJECT_DIR/x-tunnel.example.yaml" "$PROJECT_DIR/x-tunnel.yaml")
  created=1
 fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env"; fi
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
+# Migrate in interactive mode when dependencies exist; install.sh will
+# revalidate and migrate before deploying any services.
+if command -v python3 >/dev/null 2>&1 &&
+   python3 -c 'import yaml, fcntl' >/dev/null 2>&1; then
+    (cd "$PROJECT_DIR" && python3 migrate_config.py) ||
+        fail 'Unified YAML migration failed; services remain unchanged.'
+else
+    info 'YAML migration deferred until Python/PyYAML become available.'
+fi
 # Make the menu available even before the core service has been installed.
 if [ -f "$PROJECT_DIR/menu.sh" ]; then
     mkdir -p /usr/local/bin
@@ -102,7 +131,7 @@ if [ -f "$PROJECT_DIR/menu.sh" ]; then
     done
 fi
 if [ "$MENU_MODE" -eq 1 ]; then
- info 'Opening Debian/Ubuntu setup and management menu (Bot/timer optional).'
+ info 'Opening LXC systemd management menu with unified YAML.'
  # Remove the downloaded temporary files before replacing this shell.
  rm -rf "$TMP_DIR"
  trap - EXIT HUP INT TERM
