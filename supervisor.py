@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 import yaml
-from project_settings import PROJECT_ENV_FILE, load_project_env, telegram_proxy_chain
+from project_settings import (
+    PROJECT_ENV_FILE, configured_process_gid, load_project_env, telegram_proxy_chain,
+)
 
 
 load_project_env()
@@ -33,6 +35,9 @@ WATCHED_FILES = (
     PROVIDER_PATH,
     BASE_DIR / "x-tunnel-singbox-template.json",
     PROJECT_ENV_FILE,
+    # ShellCrash may be installed/removed without a project.env edit.
+    # Reconcile child GID on the next poll if /etc/group changes.
+    Path("/etc/group"),
 )
 DEFAULT_MAX_NODES = 5
 DEFAULT_PROCESS_UID = 29002
@@ -265,6 +270,7 @@ def allocate_port(
 def read_specs(reusable_bindings=None, check_port_availability=True, on_port_conflict=None):
     load_project_env()
     process_uid = configured_process_uid()
+    process_gid = configured_process_gid(process_uid)
     reusable_bindings = set(reusable_bindings or ())
     with open(CONFIG, "r", encoding="utf-8") as config_file:
         document = yaml.safe_load(config_file) or {}
@@ -344,6 +350,7 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
         specs.append({
             "name": name,
             "process_uid": process_uid,
+            "process_gid": process_gid,
             "server": server,
             "token": str(token),
             "cfip": str(cfip),
@@ -431,6 +438,7 @@ def start_child(entry):
     spec = entry["spec"]
     try:
         uid = spec["process_uid"]
+        gid = spec.get("process_gid", uid)
         workdir = child_workdir(spec)
         child_env = os.environ.copy()
         child_env["HOME"] = str(workdir)
@@ -440,14 +448,14 @@ def start_child(entry):
             cwd=str(workdir),
             env=child_env,
             user=uid,
-            group=uid,
+            group=gid,
             extra_groups=(),
             umask=0o077,
         )
         entry["restart_at"] = None
         logging.info(
-            "started node %s on SOCKS5 port %d (pid %d, uid %d)",
-            spec["name"], spec["port"], entry["process"].pid, uid,
+            "started node %s on SOCKS5 port %d (pid %d, uid %d, gid %d)",
+            spec["name"], spec["port"], entry["process"].pid, uid, gid,
         )
     except (OSError, RuntimeError, ValueError):
         logging.exception("failed to start node %s", spec["name"])
