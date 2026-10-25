@@ -107,6 +107,74 @@ class UnifiedConfigTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(migrate_config.migrate())
 
+    def test_template_defaults_are_replaced_by_actual_legacy_settings(self):
+        # A fresh unified example already contains process_uid=29002,
+        # process_gid=auto, provider_path=runtime/... and target_mbps=300.
+        # Those are TEMPLATE defaults, not a user's explicit preferences.
+        self.write_legacy()
+        example = (Path(__file__).resolve().parents[1] /
+                   "x-tunnel.example.yaml").read_text(encoding="utf-8")
+        self.config.write_text(example, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(migrate_config.migrate())
+        merged = project_settings.read_config()
+        self.assertEqual(merged["settings"]["provider_path"],
+                         "runtime/custom-provider.json")
+        self.assertEqual(merged["settings"]["target_mbps"], 450)
+        self.assertEqual(merged["settings"]["process_uid"], 29002)
+        self.assertEqual(merged["settings"]["process_gid"], "uid")
+        self.assertEqual(merged["settings"]["telegram_proxy"],
+                         "http://192.168.68.11:7890")
+        self.assertEqual(merged["telegram"]["token"],
+                         "123456:private-token-test")
+        self.assertEqual(merged["telegram"]["chat_id"], "123456789")
+        self.assertEqual(merged["defaults"]["listen_hosts"],
+                         ["127.0.0.1", "192.168.68.11"])
+        self.assertFalse(self.project.exists())
+        self.assertFalse(self.bot.exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(migrate_config.migrate())
+
+    def test_yaml_only_legacy_format_is_normalized_even_without_env_files(self):
+        before = self.config.read_text(encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(migrate_config.migrate())
+        merged = project_settings.read_config()
+        self.assertEqual(merged["settings"]["target_mbps"], 300)
+        self.assertEqual(merged["settings"]["process_gid"], "auto")
+        self.assertEqual(merged["telegram"]["token"], "")
+        self.assertEqual(merged["telegram"]["chat_id"], "")
+        self.assertIn('  - "hk|wss://example.org/about:443||||"',
+                      self.config.read_text(encoding="utf-8"))
+        self.assertIn(before.strip(), self.config.read_text(encoding="utf-8"))
+        backups = list((self.root / "cfip-data/config-backups").glob("unified-yaml-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "x-tunnel.yaml.before-migration")
+                         .read_text(encoding="utf-8"), before)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(migrate_config.migrate())
+
+    def test_custom_yaml_overrides_legacy_and_preserves_unrelated_fields(self):
+        self.write_legacy()
+        self.config.write_text(
+            OLD_YAML + "\nsettings:\n"
+            "  provider_path: \"runtime/special-user-path.json\"\n"
+            "  target_mbps: 700\n"
+            "  process_gid: uid\n"
+            "  telegram_proxy: \"\"\n",
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            migrate_config.migrate()
+        config = project_settings.read_config()
+        self.assertEqual(config["settings"]["provider_path"],
+                         "runtime/special-user-path.json")
+        self.assertEqual(config["settings"]["target_mbps"], 700)
+        self.assertEqual(config["settings"]["process_gid"], "uid")
+        # YAML explicit empty value is template default; old env proxy wins.
+        self.assertEqual(config["settings"]["telegram_proxy"],
+                         "http://192.168.68.11:7890")
+
     def test_speed_target_and_cf_ip_writer_do_not_overwrite_each_other(self):
         self.write_legacy()
         with contextlib.redirect_stdout(io.StringIO()):
