@@ -330,7 +330,7 @@ if [ "$WITH_BOT" -eq 1 ]; then
     }
 fi
 BOT_WAS_RUNNING=0
-if [ "$DISABLE_BOT" -eq 0 ] && systemctl is-active --quiet x-tunnel-speedtest-bot.service 2>/dev/null; then
+if [ "$OPENWRT" -eq 0 ] && [ "$DISABLE_BOT" -eq 0 ] && systemctl is-active --quiet x-tunnel-speedtest-bot.service 2>/dev/null; then
     (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()') || {
         echo "Existing Bot credentials are invalid in YAML; refusing restart." >&2
         exit 1
@@ -437,6 +437,10 @@ print(configured_process_gid(get_process_uid()))
         systemctl disable --now x-tunnel-speedtest-bot.service >/dev/null 2>&1 || true
     fi
     if [ "$ENABLE_TIMER" -eq 1 ]; then
+        [ "$CORE_READY" -eq 1 ] || {
+            echo "Timer cannot be enabled before valid core nodes are configured." >&2
+            exit 1
+        }
         python3 "$TIMER_CLI" enable "$TIMER_AT"
     fi
 
