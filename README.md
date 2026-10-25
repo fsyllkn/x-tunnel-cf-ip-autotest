@@ -1,6 +1,6 @@
 # X-Tunnel + Cloudflare IP 测速 · PVE LXC（`lxc` 分支）
 
-**本分支已基于 `openwrt` 分支的统一 YAML 版本重新整合。** 在 Debian/Ubuntu **systemd**、PVE 非特权 LXC 中使用；保留此前 `lxc` 分支已验证的纯 TPROXY/标准出站路径检查、systemd 定时器、独立 UID 和 ShellCrash 主 GID 兼容。不会安装 OpenWrt 的 procd 脚本，也不会自动修改其他服务的路由、DNS、ShellCrash 防火墙或 LXC 特权设置。
+**本分支将 X-Tunnel 节点、CF 测速、Provider 路径、进程身份、Telegram 凭据统一存入 `x-tunnel.yaml`。** 适用于 Debian/Ubuntu systemd 和 PVE 非特权 LXC；保留 systemd 定时器及 ShellCrash 主 GID 兼容。测速器只读检查现有路由，以避免透明代理回环；**X-Tunnel 不部署或管理 sing-box 的 TPROXY、eBPF、DNS、nftables 或策略路由。**
 
 - [LXC 部署与网络验证](LXC.md)
 - [ShellCrash GID 7890 兼容](SHELLCRASH-COMPATIBILITY.md)
@@ -9,7 +9,7 @@
 
 ## 1. 配置已完全统一
 
-**唯一需要编辑的项目配置是 `x-tunnel.yaml`。** 原 `project.env`、`speedtest-bot.env` 不再是运行时配置来源；安装程序使用 `migrate_config.py` 将旧文件的字段、Bot Token、监听地址导入 YAML，在 `cfip-data/config-backups/legacy-env-*/` 留下权限为 0600 的私有备份后才归档旧文件。YAML 必须为 `0600`；不要提交真实 Token、节点配置及测速历史。
+**唯一需要编辑的项目配置是 `x-tunnel.yaml`。** 旧 `project.env`、`speedtest-bot.env` 不再是运行时配置来源。最新安装器先运行 `migrate_config.py`，再执行内核检查和部署：如果 YAML 中仍是新版模板默认值，会优先迁入旧 `.env` 的真实字段；已经自定义的 YAML 值优先级更高。即使旧 `.env` 已经不存在，迁移器仍会补齐 YAML 缺失的 `settings` / `telegram` 区块。只有迁移并持久化成功后，才将旧文件归档到 `cfip-data/config-backups/legacy-env-*/`。YAML 和私有备份均使用限制权限；勿提交真实 Token、节点配置及测速历史。
 
 ```yaml
 defaults:
@@ -74,7 +74,26 @@ sudo sh quick-install.sh --core --archive=/tmp/x-tunnel-lxc.zip
 
 该操作只读取本地 ZIP，不向公开 GitHub 请求私有仓库源码，会自动同步源码、迁移旧配置并按既有安装器重新部署 systemd；核心服务可能重启。**Git 工作树不要用 ZIP 强行覆盖，使用 `git pull --ff-only`。** 已安装且正常运行的 `/usr/bin/x-tunnel` 内核不因常规更新被替换；如需主动修复内核使用 `--repair-kernel`。
 
-新配置首次创建后需替换 YAML 中的示例地址/密钥再安装。旧的 `project.env`/Bot 文件会由安装器迁移，迁移失败则不部署系统服务或重启。重新安装前可自行备份私有 YAML。
+新配置首次创建后需替换 YAML 中的示例地址/密钥再安装。旧的 `project.env`/Bot 文件会在**下载或修改内核之前**迁移。迁移失败则不重新部署 systemd 服务。建议更新前自行备份 YAML。
+
+**专门验证旧配置是否已合并**（不会打印节点密钥或 Bot Token）：
+
+```sh
+cd /opt/x-tunnel-cf-ip-autotest
+sudo python3 migrate_config.py
+python3 - <<'PY'
+import yaml
+with open("x-tunnel.yaml", encoding="utf-8") as stream:
+    config = yaml.safe_load(stream) or {}
+print("settings keys:", ", ".join(sorted((config.get("settings") or {}).keys())))
+print("telegram keys:", ", ".join(sorted((config.get("telegram") or {}).keys())))
+print("node count:", len(config.get("nodes") or []))
+PY
+ls -l project.env speedtest-bot.env 2>/dev/null || true
+ls -ld cfip-data/config-backups/* 2>/dev/null | tail -n 5
+```
+
+正常状态下项目根目录不再有这两份旧 `.env`，完整配置信息保存在 `x-tunnel.yaml`，旧文件只在受限权限的备份目录里保留。
 
 ## 3. 新版菜单：与 OpenWrt 编号对齐
 
@@ -151,4 +170,30 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 测速写入、测速报告、systemd Bot、历史 JSON、Provider 导出和多节点监听均基于最新统一 YAML；不部署新的 Web 服务或代理内核。默认测速报告保存在 `cfip-data/`，请妥善保护历史数据。
 
-> `openwrt` 是 procd 路由器分支；`lxc` 是 systemd 容器分支。不要把 `openwrt` 的安装脚本直接覆盖到 LXC。本次整合只升级 X-Tunnel 代码，不修改配套 sing-box 或 ShellCrash 私有仓库。
+## 6. 安全卸载与彻底清理
+
+卸载程序首先核实 systemd unit 的 `WorkingDirectory`、`ExecStart` 和项目标记，检查专属 drop-in 及快捷命令归属。如果同名文件实际属于别的程序，它会**拒绝卸载**，不会调用系统的批量服务清理，也不会删除 ShellCrash/sing-box 规则。
+
+```sh
+cd /opt/x-tunnel-cf-ip-autotest
+
+# 只读预览，推荐先运行
+sudo sh uninstall.sh --dry-run
+
+# 移除 X-Tunnel 自身的服务、运行中的单 IP 测速任务、
+# 定时器、项目 drop-in 和 x-t / xtunnel-menu 快捷命令
+# 保留所有私有配置、历史与共享二进制
+sudo sh uninstall.sh
+
+# 完整删除项目源码、x-tunnel.yaml、历史数据、备份、Git 工作树
+# 要求在删除任何服务前交互输入 DELETE
+sudo sh uninstall.sh --purge
+
+# 如果二进制确由本安装器下载并存在匹配 SHA256 所有权标记，
+# 且确认其他服务不使用 /usr/bin/x-tunnel，可明确选择连内核一并删除
+sudo sh uninstall.sh --purge --remove-kernel
+```
+
+`--purge` 为不可恢复的目录删除，勿在未备份私有数据时使用。旧版本已存在的共享 `/usr/bin/x-tunnel` 不一定具有所有权标记，故不会被卸载器推测归属并自动删除。系统包、ShellCrash/sing-box 配置、别的项目路由和 journald 全局日志均不受影响。项目数据可能还存在于自行设置的外部 Provider 路径，卸载器不会跨目录清理共享文件。
+
+> `openwrt` 是 procd 路由器分支；`lxc` 是 systemd 容器分支。本次只修复 X-Tunnel 的 `lxc` 分支，没有修改配套的 sing-box 或 ShellCrash 仓库。
