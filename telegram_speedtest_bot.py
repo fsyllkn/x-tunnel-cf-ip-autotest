@@ -192,6 +192,8 @@ def restart_xtunnel():
     if result.returncode:
         detail = (result.stderr or result.stdout or "").strip()
         return "重启 x-tunnel 服务失败。%s" % detail[:500]
+    if subprocess.run(["systemctl", "is-active", "--quiet", "x-tunnel.service"], check=False).returncode != 0:
+        return "核心未启动：配置可能仍处于待填写状态。请检查 config_ready.py 和 X-Tunnel 日志。"
     return "x-tunnel 服务已重启。"
 
 
