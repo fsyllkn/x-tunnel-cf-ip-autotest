@@ -4,7 +4,7 @@
 # is stopped, no systemd files outside the temp tree are read or removed).
 set -eu
 BASE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-TMP=$(mktemp -d /tmp/xtunnel-lxc-uninstall.XXXXXX)
+TMP=$(mktemp -d "$HOME/xtunnel-lxc-uninstall.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 PROJECT="$TMP/project"
 UNITS="$TMP/units"
