@@ -32,6 +32,48 @@ BOT_MAPPING = {
     "TG_TOKEN": ("telegram", "token"),
     "TG_CHATID": ("telegram", "chat_id"),
 }
+# These defaults are only a fallback if the example file was not shipped.
+# Comparing with shipped template defaults prevents fresh example values from
+# hiding real values in an existing project.env during an upgrade.
+FALLBACK_SETTINGS = {
+    "provider_path": "runtime/x-tunnel-provider.json",
+    "process_uid": 29002,
+    "process_gid": "auto",
+    "local_proxy": "http://127.0.0.1:7890",
+    "telegram_proxy": "",
+    "target_mbps": 300,
+}
+FALLBACK_TELEGRAM = {"token": "", "chat_id": ""}
+
+
+def template_defaults():
+    template = BASE_DIR / "x-tunnel.example.yaml"
+    if not template.is_file():
+        return FALLBACK_SETTINGS.copy(), FALLBACK_TELEGRAM.copy()
+    document = load_yaml(template.read_text(encoding="utf-8"))
+    settings = FALLBACK_SETTINGS.copy()
+    settings.update(document.get("settings") or {})
+    telegram = FALLBACK_TELEGRAM.copy()
+    telegram.update(document.get("telegram") or {})
+    return settings, telegram
+
+
+def replace_scalar(source, section, key, value):
+    """Change only a known template-default scalar, retaining node rows verbatim."""
+    start = re.search(r"(?m)^" + re.escape(section) + r":\s*(?:#.*)?$", source)
+    if start is None:
+        raise ValueError("%s must use a block mapping" % section)
+    tail = source[start.end():]
+    end_match = re.search(r"(?m)^[^\s#][^:\n]*:", tail)
+    block_end = start.end() + end_match.start() if end_match else len(source)
+    block = source[start.end():block_end]
+    expr = re.compile(r"(?m)^(  " + re.escape(key) + r"\s*:)\s*[^\n\r]*(\r?)$")
+    if len(expr.findall(block)) != 1:
+        raise ValueError("expected one scalar for %s.%s" % (section, key))
+    new_block = expr.sub(lambda m: m.group(1) + " " +
+                         json.dumps(value, ensure_ascii=False) + m.group(2),
+                         block, count=1)
+    return source[:start.end()] + new_block + source[block_end:]
 
 
 def parse_env(path):
@@ -128,68 +170,96 @@ def migrate():
     with config_lock():
         project_present = LEGACY_PROJECT.exists() or LEGACY_PROJECT.is_symlink()
         bot_present = LEGACY_BOT.exists() or LEGACY_BOT.is_symlink()
-        if not project_present and not bot_present:
-            os.chmod(CONFIG_FILE, 0o600)
-            print("One-file configuration active: x-tunnel.yaml (no legacy .env files).")
-            return False
-        project = parse_env(LEGACY_PROJECT)
-        bot = parse_env(LEGACY_BOT)
+        project = parse_env(LEGACY_PROJECT) if project_present else {}
+        bot = parse_env(LEGACY_BOT) if bot_present else {}
         original = CONFIG_FILE.read_text(encoding="utf-8")
         source = original
         document = load_yaml(source)
+        defaults, bot_defaults = template_defaults()
         changed_keys = []
+        # A new YAML created from the example contains settings defaults,
+        # not the user's migrated settings. Prefer old env over TEMPLATE
+        # values only; preserve any customised YAML setting, even when
+        # different from the legacy env. Never print secret values.
         for legacy_key, (section, field) in PROJECT_MAPPING.items():
             value = project.get(legacy_key, "")
             if not value:
                 continue
-            if section == "settings" and field in (document.get(section) or {}):
-                continue  # Unified YAML wins over deprecated .env keys.
             if field in ("process_uid", "target_mbps"):
                 if not value.isdecimal():
                     raise ValueError("invalid numeric legacy setting %s" % legacy_key)
                 value = int(value)
-            source = write_scalar(source, section, field, value)
+            current_section = document.get(section) or {}
+            if field in current_section:
+                old = current_section[field]
+                if old == value:
+                    continue
+                if old != defaults.get(field):
+                    continue  # Genuine customized YAML wins.
+                source = replace_scalar(source, section, field, value)
+            else:
+                source = write_scalar(source, section, field, value)
             document = load_yaml(source)
             changed_keys.append(section + "." + field)
+
         for legacy_key, (_, field) in BOT_MAPPING.items():
             value = bot.get(legacy_key, "")
             if not value or "替换为" in value:
                 continue
-            existing = str((document.get("telegram") or {}).get(field) or "")
+            current_section = document.get("telegram") or {}
+            existing = str(current_section.get(field) or "")
             if existing and "替换为" not in existing:
-                continue
+                continue  # Existing custom YAML credential wins.
             if existing:
-                # Pre-existing placeholder in unified file should not silently
-                # block safe credentials migration. Require manual review.
-                raise ValueError("unified telegram.%s contains placeholder; migrate manually" % field)
-            if "telegram" in document and field in document["telegram"]:
-                # Existing explicit empty value belongs to the new file; import
-                # legacy real credentials instead of silently losing the Bot.
+                raise ValueError("unified telegram.%s has placeholder; migrate manually" % field)
+            if field in current_section:
                 source = replace_empty_telegram_scalar(source, field, value)
             else:
                 source = write_scalar(source, "telegram", field, value)
             document = load_yaml(source)
             changed_keys.append("telegram." + field)
+
         legacy_hosts = project.get("X_TUNNEL_LISTEN_HOSTS", "")
         if legacy_hosts.strip():
-            hosts = [h.strip() for h in legacy_hosts.split(",") if h.strip()]
-            # Same normalized numeric addresses accepted by supervisor.
             import ipaddress
-            hosts = [str(ipaddress.ip_address(h)) for h in hosts]
+            hosts = [str(ipaddress.ip_address(h.strip()))
+                     for h in legacy_hosts.split(",") if h.strip()]
             if not hosts:
                 raise ValueError("X_TUNNEL_LISTEN_HOSTS contains no IP")
             source, listen_changed = change_yaml_listener(source, hosts)
             if listen_changed:
                 changed_keys.append("defaults.listen_hosts")
+            document = load_yaml(source)
+
+        # Always finish normalising older YAML, even when no .env files
+        # remain. The only active file must have a complete settings/telegram
+        # layout; a successful previous partial migration must be repairable.
+        for field, value in defaults.items():
+            if field not in (document.get("settings") or {}):
+                source = write_scalar(source, "settings", field, value)
+                document = load_yaml(source)
+                changed_keys.append("settings." + field)
+        for field, value in bot_defaults.items():
+            if field not in (document.get("telegram") or {}):
+                source = write_scalar(source, "telegram", field, value)
+                document = load_yaml(source)
+                changed_keys.append("telegram." + field)
+
         merged = load_yaml(source)
-        if merged.get("telegram"):
-            token = str(merged["telegram"].get("token") or "")
-            chat = str(merged["telegram"].get("chat_id") or "")
-            if chat and not chat.isdecimal() and "替换为" not in chat:
-                raise ValueError("telegram.chat_id must be numeric")
-        # Backup existing YAML and env files, before changing anything.
+        telegram = merged.get("telegram") or {}
+        chat = str(telegram.get("chat_id") or "")
+        if chat and not chat.isdecimal() and "替换为" not in chat:
+            raise ValueError("telegram.chat_id must be numeric")
+        if not project_present and not bot_present and source == original:
+            os.chmod(CONFIG_FILE, 0o600)
+            print("One-file configuration verified: x-tunnel.yaml.")
+            return False
+
         backup_dir = BASE_DIR / "cfip-data" / "config-backups" / (
-            "legacy-env-%s-%d" % (time.strftime("%Y%m%d-%H%M%S"), os.getpid())
+            "%s-%s-%d" % (
+                "legacy-env" if project_present or bot_present else "unified-yaml",
+                time.strftime("%Y%m%d-%H%M%S"), os.getpid()
+            )
         )
         backup_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
         os.chmod(backup_dir, 0o700)
@@ -200,7 +270,8 @@ def migrate():
             write_config_atomic(source)
         else:
             os.chmod(CONFIG_FILE, 0o600)
-        # Copy first: if interrupted, next run can safely retry migration.
+        # Originals are archived only AFTER the full merged YAML is durable.
+        # Failed YAML validation/copy must never delete the source credentials.
         for path in (LEGACY_PROJECT, LEGACY_BOT):
             if path.exists():
                 target = backup_dir / path.name
@@ -208,11 +279,11 @@ def migrate():
                 os.chmod(target, 0o600)
         for path in (LEGACY_PROJECT, LEGACY_BOT):
             if path.exists():
-                path.unlink()  # Canonical YAML is now the only active configuration.
-        print("Migrated %d field(s) into x-tunnel.yaml; archived legacy files in %s" %
+                path.unlink()
+        print("Unified x-tunnel.yaml: updated %d field(s); private backups in %s" %
               (len(changed_keys), backup_dir))
-        if legacy_hosts.strip() and not ("defaults.listen_hosts" in changed_keys):
-            print("Note: kept existing YAML defaults.listen_hosts; old env listener differed.")
+        if legacy_hosts.strip() and "defaults.listen_hosts" not in changed_keys:
+            print("Note: custom YAML defaults.listen_hosts retained over legacy env.")
         return True
 
 
