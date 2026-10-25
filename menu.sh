@@ -565,7 +565,7 @@ while :; do
       root_only || continue
       prepare x-tunnel.yaml x-tunnel.example.yaml || continue
       if ! python3 -c 'import telegram_speedtest_bot as b; b.read_config()' >/dev/null 2>&1; then
-        say '先在 x-tunnel.yaml 的 telegram.token / telegram.chat_id 填写凭据。'
+        say '先在选项 7 编辑统一 YAML，并填写 telegram.token / telegram.chat_id。'
         if ask '现在编辑统一 YAML 配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
       else
         say 'Bot 将独立安装；未配置 X-Tunnel 节点时测速命令暂不可用。'
