@@ -118,6 +118,45 @@ read_telegram_credentials(require_chat_id=False)
     exit 1
 }
 
+# Refuse to overwrite same-named units/launchers owned by another program.
+# Check ALL targets up front: installation must not partially replace foreign
+# systemd service files or unrelated executable shortcuts.
+if [ "$OPENWRT" -eq 0 ]; then
+    . "$PROJECT_DIR/systemd/ownership.sh"
+    for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-bot.service x-tunnel-speedtest.timer x-tunnel-speedtest-single@.service; do
+        if [ -e "/etc/systemd/system/$unit" ] || [ -L "/etc/systemd/system/$unit" ]; then
+            xt_unit_owned "$PROJECT_DIR" /etc/systemd/system "$unit" || {
+                echo "Foreign or unrecognised systemd unit: $unit; refusing to overwrite." >&2
+                exit 1
+            }
+        fi
+    done
+    for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-single@.service; do
+        dropin="/etc/systemd/system/$unit.d/shellcrash-bypass.conf"
+        if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+            xt_bypass_owned "$dropin" || {
+                echo "Foreign ShellCrash drop-in $dropin; refusing to overwrite." >&2
+                exit 1
+            }
+        fi
+    done
+    timer_dropin=/etc/systemd/system/x-tunnel-speedtest.timer.d/50-xtunnel-schedule.conf
+    if [ -e "$timer_dropin" ] || [ -L "$timer_dropin" ]; then
+        xt_timer_override_owned "$timer_dropin" || {
+            echo "Unrecognised timer override $timer_dropin; refusing to overwrite." >&2
+            exit 1
+        }
+    fi
+    for launcher in /usr/local/bin/x-t /usr/local/bin/xtunnel-menu; do
+        if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+            xt_launcher_owned "$PROJECT_DIR" "$launcher" || {
+                echo "Foreign X-Tunnel launcher $launcher; refusing to overwrite." >&2
+                exit 1
+            }
+        fi
+    done
+fi
+
 machine=$(uname -m)
 case "$machine" in
     x86_64|amd64) kernel_arch=amd64; expected_elf_machine=62 ;;
@@ -211,6 +250,29 @@ PY
     fi
     copy_with_mode "$downloaded_kernel" "$KERNEL_PATH.new" 0755
     mv -f "$KERNEL_PATH.new" "$KERNEL_PATH"
+    # Record provenance ONLY for binaries actually installed by this
+    # installer. An existing shared binary without a matching marker is never
+    # eligible for automatic removal during project purge.
+    if [ "$OPENWRT" -eq 0 ]; then
+        mkdir -p "$PROJECT_DIR/runtime"
+        python3 - "$KERNEL_PATH" "$PROJECT_DIR/runtime/managed-kernel.sha256" <<'PY'
+import hashlib, os, pathlib, sys, tempfile
+binary = pathlib.Path(sys.argv[1])
+marker = pathlib.Path(sys.argv[2])
+sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+fd, tmp = tempfile.mkstemp(prefix=".managed-kernel-", dir=str(marker.parent))
+try:
+    with os.fdopen(fd, "w", encoding="ascii") as stream:
+        stream.write(sha + "  " + str(binary) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, marker)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY
+    fi
     echo "Installed x-tunnel kernel for $machine from $KERNEL_REPOSITORY ($release)."
     rm -rf "$download_dir"
     trap - EXIT HUP INT TERM
