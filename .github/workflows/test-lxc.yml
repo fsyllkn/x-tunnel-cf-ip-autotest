@@ -18,8 +18,12 @@ jobs:
           python-version: '3.11'
       - name: Check script syntax and dependencies
         run: |
-          sh -n install.sh menu.sh quick-install.sh uninstall.sh
+          for script in install.sh menu.sh quick-install.sh uninstall.sh systemd/ownership.sh tests/test_lxc_uninstall.sh; do
+            sh -n "$script"
+          done
           python3 -m pip install PyYAML
-          python3 -m compileall -q cfip_speedtest.py supervisor.py sync_singbox.py systemd tests
-      - name: Test CF direct routes, isolated UID, timer and export
+          python3 -m compileall -q cfip_speedtest.py supervisor.py sync_singbox.py migrate_config.py telegram_speedtest_bot.py project_settings.py systemd tests
+      - name: Test CF direct routes, isolated UID, unified YAML and systemd timer
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Test complete uninstall against mock-only systemd tree
+        run: sh tests/test_lxc_uninstall.sh
