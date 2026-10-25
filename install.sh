@@ -106,8 +106,20 @@ python3 -c 'import yaml, fcntl' >/dev/null 2>&1 || {
     echo "Unified YAML migration failed; no systemd services were changed." >&2; exit 1;
 }
 chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
-# Save diagnostics without exposing any Telegram or tunnel credentials.
-PYTHONPATH="$PROJECT_DIR" python3 -c '
+# Validate readiness but never block LXC service installation for blank/example
+# nodes. Preserve strict OpenWrt behavior; only the LXC branch changes here.
+CORE_READY=1
+if [ "$OPENWRT" -eq 0 ]; then
+    if (cd "$PROJECT_DIR" && python3 config_ready.py); then
+        CORE_READY=1
+    else
+        status=$?
+        [ "$status" -eq 10 ] || { echo "Invalid YAML; correct configuration before installation." >&2; exit 1; }
+        CORE_READY=0
+        echo "Core setup will complete without starting (configuration pending)."
+    fi
+else
+    PYTHONPATH="$PROJECT_DIR" python3 -c '
 import supervisor
 from urllib.parse import urlsplit
 from project_settings import get_target_mbps, read_telegram_credentials
@@ -124,10 +136,8 @@ for spec in specs:
         raise ValueError("replace example WSS server for node %s" % spec["name"])
 get_target_mbps()
 read_telegram_credentials(require_chat_id=False)
-' || {
-    echo "Unified x-tunnel.yaml has invalid or example node values; services were not modified." >&2
-    exit 1
-}
+' || { echo "Invalid OpenWrt core configuration." >&2; exit 1; }
+fi
 
 # Refuse to overwrite same-named units/launchers owned by another program.
 # Check ALL targets up front: installation must not partially replace foreign
@@ -309,7 +319,7 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     fi
     exit 1
 }
-PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False); from project_settings import get_target_mbps, read_telegram_credentials; get_target_mbps(); read_telegram_credentials(require_chat_id=False)' || {
+[ "$OPENWRT" -eq 0 ] || PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False); from project_settings import get_target_mbps, read_telegram_credentials; get_target_mbps(); read_telegram_credentials(require_chat_id=False)' || {
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
@@ -401,8 +411,14 @@ print(configured_process_gid(get_process_uid()))
     fi
 
     systemctl daemon-reload
-    systemctl enable x-tunnel.service
-    running_units="x-tunnel.service"
+    if [ "$CORE_READY" -eq 1 ]; then
+        systemctl enable x-tunnel.service
+        running_units="x-tunnel.service"
+    else
+        systemctl disable --now x-tunnel.service >/dev/null 2>&1 || true
+        running_units=""
+        echo "Core service installed, stopped and disabled; configure YAML then use option 1 to activate."
+    fi
     if [ "$WITH_BOT" -eq 1 ]; then
         systemctl enable x-tunnel-speedtest-bot.service
     fi
