@@ -81,7 +81,7 @@ sudo sh quick-install.sh --core --archive=/tmp/x-tunnel-lxc.zip
 ```sh
 cd /opt/x-tunnel-cf-ip-autotest
 sudo python3 migrate_config.py
-python3 - <<'PY'
+sudo python3 - <<'PY'
 import yaml
 with open("x-tunnel.yaml", encoding="utf-8") as stream:
     config = yaml.safe_load(stream) or {}
