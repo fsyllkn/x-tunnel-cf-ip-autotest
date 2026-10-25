@@ -56,11 +56,24 @@ timer_status() {
 }
 prepare() {
   file=$1; example=$2
+  [ ! -L "$file" ] || { say "拒绝编辑符号链接 $file"; return 1; }
   if [ ! -f "$file" ]; then
     [ -f "$example" ] || { say "缺少模板 $example"; return 1; }
     (umask 077; cp "$example" "$file") || return 1
   fi
-  chmod 600 "$file"
+  chmod 600 "$file" || return 1
+  if [ "$file" = x-tunnel.yaml ] && [ -f "$PROJECT_DIR/migrate_config.py" ]; then
+    if command -v python3 >/dev/null 2>&1 &&
+       python3 -c 'import yaml, fcntl' >/dev/null 2>&1; then
+      (cd "$PROJECT_DIR" && python3 migrate_config.py) || {
+        say '统一 YAML 迁移失败：旧文件未删除，请先检查迁移提示。'
+        return 1
+      }
+    elif [ -f project.env ] || [ -f speedtest-bot.env ]; then
+      say '缺少 PyYAML/Python，无法合并旧 .env。请先安装依赖。'
+      return 1
+    fi
+  fi
 }
 can_check_config() {
   command -v python3 >/dev/null 2>&1 || return 1
@@ -68,6 +81,10 @@ can_check_config() {
 }
 check_config() {
   [ "$1" = "x-tunnel.yaml" ] || return 1
+  if [ -f project.env ] || [ -f speedtest-bot.env ]; then
+    say '发现尚未迁移的旧 .env；先使用选项 7 编辑统一 YAML 或选项 1 安装。'
+    return 1
+  fi
   PYTHONPATH="$PROJECT_DIR" python3 - <<'PY'
 import supervisor
 from project_settings import get_target_mbps, read_telegram_credentials
