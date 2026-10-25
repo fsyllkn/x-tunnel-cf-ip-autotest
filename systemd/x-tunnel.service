@@ -8,6 +8,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=@PROJECT_DIR@
+# Exit 10 (unconfigured) skips start without triggering Restart=always.
+ExecCondition=/usr/bin/python3 @PROJECT_DIR@/config_ready.py
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/supervisor.py
 Restart=always
