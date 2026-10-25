@@ -1,3 +1,4 @@
+# Managed-by: x-tunnel-cf-ip-autotest (lxc/systemd)
 [Unit]
 Description=Single Cloudflare IP speed test for X-Tunnel (%I)
 Wants=network-online.target
