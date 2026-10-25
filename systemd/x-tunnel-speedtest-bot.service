@@ -7,6 +7,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=@PROJECT_DIR@
+ExecCondition=/usr/bin/python3 @PROJECT_DIR@/bot_ready.py
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/telegram_speedtest_bot.py
 Restart=always
