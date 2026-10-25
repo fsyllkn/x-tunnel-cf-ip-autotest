@@ -108,7 +108,24 @@ edit_file() {
   if ! can_check_config "$file"; then
     say '配置已保存。此设备尚缺少对应 Python 模块，安装所需功能时将检查配置。'
   elif check_config "$file"; then
-    say '校验成功。节点配置会自动重载；其他变量修改后请重启相关服务。'
+    if [ "$PLATFORM" = systemd ]; then
+      if python3 "$PROJECT_DIR/config_ready.py"; then
+        if [ "$(svc_status core)" = '运行中' ]; then
+          say '配置可启动；运行中的 X-Tunnel 节点会自动重载。Bot 等其他变量需重启对应服务。'
+        else
+          say '配置可启动。核心尚未运行，请用菜单 1 安装/启用。'
+        fi
+      else
+        readiness_code=$?
+        if [ "$readiness_code" -eq 10 ]; then
+          say 'YAML 基本格式有效，但示例节点/密钥尚未替换，核心保持停止。'
+        else
+          say 'YAML 不符合启动要求；请按上方错误检查。'
+        fi
+      fi
+    else
+      say '校验成功。节点配置会自动重载；其他变量修改后请重启相关服务。'
+    fi
   else
     say '配置校验失败，暂不要重启服务。'
     if ask '恢复编辑前的备份？'; then
@@ -243,6 +260,16 @@ repair_kernel() {
   ask '安装已验证的稳定 X-Tunnel 内核？将备份旧二进制，并短暂重启全部 SOCKS5 节点。' || return
   if sh "$PROJECT_DIR/install.sh" --repair-kernel; then
     say '已安装 Go 1.26 稳定内核，正在检查所有 SOCKS5 端口...'
+    if [ "$PLATFORM" = systemd ]; then
+      if ! python3 "$PROJECT_DIR/config_ready.py"; then
+        say '内核已安装；节点未配置完整，核心服务保持停止。填写 YAML 后用菜单 1 启动。'
+        return 0
+      fi
+      if ! systemctl is-active --quiet x-tunnel.service; then
+        say '内核已安装，但核心服务未运行；请查看菜单 4 的连接日志。'
+        return 1
+      fi
+    fi
     if ! python3 "$PROJECT_DIR/openwrt/healthcheck.py"; then
       say 'ERROR: 核心可能仍在运行，但节点 SOCKS5 监听未全部就绪。请检查 X-Tunnel 连接日志。'
       return 1
@@ -256,7 +283,14 @@ install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
   say '无需先填写节点。未配置时也可安装核心服务，保持停止且不自启。'
-  say '轻量核心模式：只部署 X-Tunnel 和 Provider，不要求 TG Bot 凭据。'
+  say '轻量核心模式：部署 X-Tunnel 和 Provider，不要求 TG Bot 凭据。'
+  if [ "$PLATFORM" = systemd ]; then
+    if python3 "$PROJECT_DIR/config_ready.py"; then
+      say '配置已就绪：安装后启用并启动核心服务。'
+    else
+      say '配置尚未就绪：仍会安装 systemd 服务，但保持停止且不自启。'
+    fi
+  fi
   if ask '安装/修复核心服务（会重启 X-Tunnel）？'; then
     sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
   fi
@@ -300,7 +334,8 @@ show_service_log_openwrt() {
 show_logs() {
   say '1) X-Tunnel 连接日志（仅核心）  2) CF IP 测速日志'
   say '3) Telegram Bot 日志        4) 服务状态'
-  say '5) 测速环境自检（不启动任务）  6) SOCKS5 握手健康检查  0) 返回'
+  say '5) 测速环境自检（不启动任务）  6) SOCKS5 握手健康检查'
+  say '7) 单 IP 测速日志              8) Telegram Bot 连接诊断  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
@@ -360,6 +395,17 @@ else:
     6)
       python3 "$PROJECT_DIR/openwrt/healthcheck.py" ||
         say '发现至少一个 SOCKS5 节点未监听或未完成握手。' ;;
+    7)
+      if [ "$PLATFORM" = systemd ]; then
+        journalctl --no-pager -n 100 -u 'x-tunnel-speedtest-single@*.service' ||
+          say '单 IP 测速日志读取失败。'
+      else
+        say 'OpenWrt 单 IP 测速请查看 cfip-data/openwrt-speedtest.log。'
+      fi ;;
+    8)
+      if ! python3 "$PROJECT_DIR/telegram_speedtest_bot.py" --diagnose; then
+        say 'Bot 诊断未通过：请检查 Token/Chat ID、Telegram 代理或 Webhook。'
+      fi ;;
     0) return;;
   esac
 }
@@ -395,6 +441,10 @@ manage_timer() {
         fi
       else
         [ -f "$SYSTEMD_TIMER_CLI" ] || { say 'Linux 定时管理脚本不存在，请先更新 lxc 分支。'; return; }
+        if ! python3 "$PROJECT_DIR/config_ready.py"; then
+          say '节点未配置完整：不能开启定时测速。可先安装服务，填写节点后再启用定时。'
+          return 1
+        fi
         saved=$(python3 "$SYSTEMD_TIMER_CLI" saved) || return
         printf '每日测速时间（24小时制 HH:MM）[%s]: ' "$saved"
         IFS= read -r chosen || return
@@ -421,8 +471,24 @@ run_test() {
   root_only || return
   say '注意：测速可能更新节点 CF IP。旧式策略路由模式会临时添加候选 IP 路由；sing-box 网关模式不会修改这些路由。'
   ask '现在执行完整测速？' || return
-  if [ "$PLATFORM" = openwrt ]; then python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
-  else systemctl start x-tunnel-speedtest.service || say '测速启动失败。'; fi
+  if [ "$PLATFORM" = openwrt ]; then
+    python3 "$PROJECT_DIR/cfip_speedtest.py" || say '测速失败。'
+  else
+    if [ ! -f /etc/systemd/system/x-tunnel-speedtest.service ]; then
+      say '测速服务未安装。请先使用菜单 1 安装核心组件。'
+      return 1
+    fi
+    if ! python3 "$PROJECT_DIR/config_ready.py"; then
+      say '没有有效的 X-Tunnel 节点，不运行 CF 测速；请先填写 YAML。'
+      return 1
+    fi
+    if systemctl start --no-block x-tunnel-speedtest.service; then
+      say '已提交 CF IP 测速任务。执行进度请在菜单 4 查看测速日志。'
+    else
+      say '测速提交失败，请在菜单 4 查看测速服务日志。'
+      return 1
+    fi
+  fi
 }
 # Menu labels are padded by terminal cell width (CJK=2), not byte count.
 # Keep the second label at cell 33; do not format two columns with printf %-Ns.
@@ -474,7 +540,20 @@ while :; do
       elif ! can_check_config x-tunnel.yaml; then
         say 'x-tunnel.yaml: 缺少 PyYAML，无法校验'
       elif check_config x-tunnel.yaml; then
-        say 'x-tunnel.yaml: OK（节点、监听、UID、测速目标和可选 Bot 均已校验）'
+        if [ "$PLATFORM" = systemd ]; then
+          if python3 "$PROJECT_DIR/config_ready.py"; then
+            say 'x-tunnel.yaml: READY（配置完整，满足核心启动条件）'
+          else
+            config_status=$?
+            if [ "$config_status" -eq 10 ]; then
+              say 'x-tunnel.yaml: PENDING（基本格式有效，但示例节点/密钥尚未替换）'
+            else
+              say 'x-tunnel.yaml: INVALID（请查看上方配置检查错误）'
+            fi
+          fi
+        else
+          say 'x-tunnel.yaml: OK（格式检查通过）'
+        fi
       else
         say 'x-tunnel.yaml: INVALID'
       fi;;
@@ -485,15 +564,12 @@ while :; do
     13)
       root_only || continue
       prepare x-tunnel.yaml x-tunnel.example.yaml || continue
-      if grep -q 'example.com\|替换为' x-tunnel.yaml; then
-        say '请先在选项 7 编辑统一 YAML 配置并填写真实节点，再安装 Telegram Bot。'
-        continue
-      fi
       if ! python3 -c 'import telegram_speedtest_bot as b; b.read_config()' >/dev/null 2>&1; then
         say '先在 x-tunnel.yaml 的 telegram.token / telegram.chat_id 填写凭据。'
         if ask '现在编辑统一 YAML 配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
       else
-        say '将按需安装 HTTPS/IDNA 和 ip-full 等组件，然后启动 Bot。'
+        say 'Bot 将独立安装；未配置 X-Tunnel 节点时测速命令暂不可用。'
+        say '请确认 settings.telegram_proxy 或 settings.local_proxy 指向可连接 Telegram 的代理。'
         if ask '安装/启用 Bot（将重启核心服务）？'; then
           sh "$PROJECT_DIR/install.sh" --with-bot || say 'Bot 安装未完成。'
         fi
