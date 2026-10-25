@@ -255,11 +255,7 @@ repair_kernel() {
 install_services() {
   root_only || return
   prepare x-tunnel.yaml x-tunnel.example.yaml || return
-  if grep -q 'example.com\|替换为' x-tunnel.yaml; then
-    say '检测到节点示例配置。请先填写真实 X-Tunnel 服务地址和密钥。'
-    if ask '现在编辑节点配置？'; then edit_file x-tunnel.yaml x-tunnel.example.yaml; fi
-    return
-  fi
+  say '无需先填写节点。未配置时也可安装核心服务，保持停止且不自启。'
   say '轻量核心模式：只部署 X-Tunnel 和 Provider，不要求 TG Bot 凭据。'
   if ask '安装/修复核心服务（会重启 X-Tunnel）？'; then
     sh "$PROJECT_DIR/install.sh" || say '安装失败，请检查上方错误。'
