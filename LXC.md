@@ -23,7 +23,7 @@ sudo python3 systemd/speedtest-timer.py enable 18:00
 sudo python3 systemd/speedtest-timer.py status
 ```
 
-此分支针对 **非特权 LXC**，不需要 eBPF，也不应取消 AppArmor/seccomp。X-Tunnel Go 核心默认在非 root UID 29002 下运行，supervisor 使用 systemd。无 ShellCrash 时主 GID 同样为 29002；如果存在精确的 `shellcrash:x:7890` 系统组，默认自动选择主 GID 7890，让子进程能匹配 ShellCrash 的 GID 旁路规则。该设置不会增加容器特权或改动 ShellCrash 配置。
+本分支只运行 X-Tunnel SOCKS5 和 CF 测速，不需要自行部署 eBPF、TPROXY 或修改 sing-box 的网关规则。CF 测速的相关检查仅用于识别系统已有代理的路由回环。非特权 LXC 不应取消 AppArmor/seccomp。X-Tunnel Go 核心默认在非 root UID 29002 下运行，supervisor 使用 systemd。无 ShellCrash 时主 GID 同样为 29002；如果存在精确的 `shellcrash:x:7890` 系统组，默认自动选择主 GID 7890，让子进程能匹配 ShellCrash 的 GID 旁路规则。该设置不会增加容器特权或改动 ShellCrash 配置。
 
 ### 可选：共存 ShellCrash 的主 GID 兼容
 
@@ -45,3 +45,17 @@ sudo python3 systemd/speedtest-timer.py status
 更多 PVE 非特权 LXC 建立、网关启停及故障阻断见 [sing-box LXC 使用说明](https://github.com/fsyllkn/linux_openwrt-sing-box/tree/lxc)。
 
 Ubuntu/Debian 普通服务器请继续使用 `main` 分支；OpenWrt/iStoreOS 使用 `openwrt` 分支。
+
+
+## 最新配置迁移与安全卸载
+
+旧项目中 `project.env`、`speedtest-bot.env` 的配置会在安装器运行时合并到唯一的 `x-tunnel.yaml`。旧值覆盖模板默认值，但不覆盖已自定义的 YAML 字段；即使旧 `.env` 已不存在，也会补齐缺失的 `settings` / `telegram` 区块。迁移在内核下载和 systemd 部署之前运行，失败不启停现有服务。
+
+```sh
+cd /opt/x-tunnel-cf-ip-autotest
+sudo python3 migrate_config.py
+sudo sh install.sh --with-speedtest
+sudo sh uninstall.sh --dry-run # 只读检查将卸载的项目资源
+```
+
+卸载分三种模式：`sh uninstall.sh` 只移除本项目服务和定时任务、保留历史与共享内核；`sh uninstall.sh --purge` 经交互确认后删掉项目文件和历史；`sh uninstall.sh --purge --remove-kernel` 只在 SHA256 证明二进制由本安装器下载且没有进程继续使用时删除该二进制。**不同服务的 unit、ShellCrash、sing-box、其他路由规则不能删除。** 详细说明见 [README](README.md#6-安全卸载与彻底清理)。
