@@ -87,6 +87,37 @@ copy_with_mode() {
     chmod "$3" "$2"
 }
 
+# Migrate old configuration before kernel validation, download, or any
+# systemd operation. In particular, a missing/invalid binary must not prevent
+# users from consolidating and backing up their private .env values.
+if [ ! -e "$PROJECT_DIR/x-tunnel.yaml" ]; then
+    [ -f "$PROJECT_DIR/x-tunnel.example.yaml" ] || {
+        echo "No x-tunnel.yaml or x-tunnel.example.yaml found." >&2; exit 1;
+    }
+    copy_with_mode "$PROJECT_DIR/x-tunnel.example.yaml" "$PROJECT_DIR/x-tunnel.yaml" 0600
+fi
+[ -f "$PROJECT_DIR/x-tunnel.yaml" ] && [ ! -L "$PROJECT_DIR/x-tunnel.yaml" ] || {
+    echo "x-tunnel.yaml must be a regular file, never a symlink." >&2; exit 1;
+}
+python3 -c 'import yaml, fcntl' >/dev/null 2>&1 || {
+    echo "PyYAML and Python fcntl are required to migrate unified YAML." >&2; exit 1;
+}
+(cd "$PROJECT_DIR" && python3 migrate_config.py) || {
+    echo "Unified YAML migration failed; no systemd services were changed." >&2; exit 1;
+}
+chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
+# Save diagnostics without exposing any Telegram or tunnel credentials.
+PYTHONPATH="$PROJECT_DIR" python3 -c '
+import supervisor
+from project_settings import get_target_mbps, read_telegram_credentials
+supervisor.read_specs(check_port_availability=False)
+get_target_mbps()
+read_telegram_credentials(require_chat_id=False)
+' || {
+    echo "Unified x-tunnel.yaml failed validation; services were not modified." >&2
+    exit 1
+}
+
 machine=$(uname -m)
 case "$machine" in
     x86_64|amd64) kernel_arch=amd64; expected_elf_machine=62 ;;
@@ -184,22 +215,6 @@ PY
     rm -rf "$download_dir"
     trap - EXIT HUP INT TERM
 fi
-[ -f "$PROJECT_DIR/x-tunnel.yaml" ] || {
-    echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
-    exit 1
-}
-# Unify legacy .env files into x-tunnel.yaml BEFORE any systemd restart.
-# The migrator preserves YAML node rows and archives private originals.
-chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
-python3 -c 'import yaml, fcntl' >/dev/null 2>&1 || {
-    echo "PyYAML and Python fcntl are required for safe YAML migration." >&2
-    exit 1
-}
-(cd "$PROJECT_DIR" && python3 migrate_config.py) || {
-    echo "Legacy YAML migration failed; existing services were NOT restarted." >&2
-    exit 1
-}
-
 # OpenWrt's python3-light may omit standard library IDNA codecs.
 # urllib's HTTPS proxy tunnel setup requires this codec.
 if [ "$WITH_SPEEDTEST" -eq 1 ]; then
