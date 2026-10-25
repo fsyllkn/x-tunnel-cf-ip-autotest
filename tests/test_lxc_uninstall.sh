@@ -112,4 +112,52 @@ echo 'TEST repeated uninstall is idempotent'
 sh "$PROJECT/uninstall.sh" > "$TMP/result"
 [ -f "$PROJECT/x-tunnel.yaml" ]
 [ -f "$UNITS/unrelated.service" ]
+echo 'TEST --purge asks for confirmation before changing anything'
+python3 - "$PROJECT/uninstall.sh" NO --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 1, "refused purge should fail"
+PY
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$TMP/shared-kernel" ]
+
+echo 'TEST confirmed --purge removes the entire project but retains shared binary'
+python3 - "$PROJECT/uninstall.sh" DELETE --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "confirmed purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+
+echo 'TEST --purge --remove-kernel removes only recorded SHA256 owned binary'
+mkdir -p "$PROJECT/systemd" "$PROJECT/runtime"
+cp "$BASE/uninstall.sh" "$PROJECT/uninstall.sh"
+cp "$BASE/systemd/ownership.sh" "$PROJECT/systemd/ownership.sh"
+sha=$(sha256sum "$TMP/shared-kernel" | awk '{print $1}')
+printf '%s  %s\n' "$sha" "$TMP/shared-kernel" > "$PROJECT/runtime/managed-kernel.sha256"
+python3 - "$PROJECT/uninstall.sh" DELETE --purge --remove-kernel <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "verified kernel purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ ! -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
 echo 'Mock-only LXC uninstall regression passed.'
