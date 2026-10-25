@@ -109,12 +109,23 @@ chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
 # Save diagnostics without exposing any Telegram or tunnel credentials.
 PYTHONPATH="$PROJECT_DIR" python3 -c '
 import supervisor
+from urllib.parse import urlsplit
 from project_settings import get_target_mbps, read_telegram_credentials
-supervisor.read_specs(check_port_availability=False)
+specs = supervisor.read_specs(check_port_availability=False)
+if not specs:
+    raise ValueError("configure at least one real X-Tunnel node in x-tunnel.yaml")
+for spec in specs:
+    for field in ("token", "cfip"):
+        value = str(spec.get(field) or "")
+        if "替换为" in value or value.startswith("YOUR_"):
+            raise ValueError("replace the example %s for node %s" % (field, spec["name"]))
+    host = urlsplit(spec["server"]).hostname or ""
+    if host in ("example.com", "example.org") or host.endswith((".example.com", ".example.org")):
+        raise ValueError("replace example WSS server for node %s" % spec["name"])
 get_target_mbps()
 read_telegram_credentials(require_chat_id=False)
 ' || {
-    echo "Unified x-tunnel.yaml failed validation; services were not modified." >&2
+    echo "Unified x-tunnel.yaml has invalid or example node values; services were not modified." >&2
     exit 1
 }
 
