@@ -7,6 +7,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=@PROJECT_DIR@
+ExecCondition=/usr/bin/python3 @PROJECT_DIR@/config_ready.py
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/cfip_speedtest.py
 TimeoutStartSec=infinity
