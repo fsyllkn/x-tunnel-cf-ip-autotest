@@ -60,14 +60,14 @@ def template_defaults():
 
 def replace_scalar(source, section, key, value):
     """Change only a known template-default scalar, retaining node rows verbatim."""
-    start = re.search(r"(?m)^" + re.escape(section) + r":\s*(?:#.*)?$", source)
+    start = re.search(r"(?m)^" + re.escape(section) + r":[ \t]*(?:#.*)?$", source)
     if start is None:
         raise ValueError("%s must use a block mapping" % section)
     tail = source[start.end():]
     end_match = re.search(r"(?m)^[^\s#][^:\n]*:", tail)
     block_end = start.end() + end_match.start() if end_match else len(source)
     block = source[start.end():block_end]
-    expr = re.compile(r"(?m)^(  " + re.escape(key) + r"\s*:)\s*[^\n\r]*(\r?)$")
+    expr = re.compile(r"(?m)^(  " + re.escape(key) + r"[ \t]*:)[ \t]*[^\n\r]*(\r?)$")
     if len(expr.findall(block)) != 1:
         raise ValueError("expected one scalar for %s.%s" % (section, key))
     new_block = expr.sub(lambda m: m.group(1) + " " +
