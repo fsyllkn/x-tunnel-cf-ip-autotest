@@ -25,12 +25,32 @@ class LXCUnifiedIntegrationTest(unittest.TestCase):
     def test_installer_migrates_before_any_systemd_reload_or_restart(self):
         content = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("python3 migrate_config.py", content)
-        self.assertLess(content.index("python3 migrate_config.py"),
-                        content.index("systemctl daemon-reload"))
+        for marker in ("KERNEL_INSTALLED=0", "systemctl daemon-reload"):
+            with self.subTest(marker=marker):
+                self.assertLess(content.index("python3 migrate_config.py"),
+                                content.index(marker))
+        self.assertIn('xt_unit_owned "$PROJECT_DIR"', content)
+        self.assertIn('runtime/managed-kernel.sha256', content)
+        self.assertIn('configure at least one real X-Tunnel node', content)
         self.assertNotIn("project.env.example", content)
         self.assertNotIn("speedtest-bot.env.example", content)
         self.assertIn("configured_process_gid(get_process_uid())", content)
         self.assertIn("BOT_WAS_RUNNING", content)
+
+    def test_safe_uninstaller_preflights_all_resources_and_confirms_before_stop(self):
+        content = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+        self.assertIn("--dry-run", content)
+        self.assertIn("--purge", content)
+        self.assertIn("--remove-kernel", content)
+        self.assertIn("xt_unit_owned", content)
+        self.assertIn("xt_launcher_owned", content)
+        self.assertIn("xt_timer_override_owned", content)
+        self.assertIn("owned_kernel", content)
+        self.assertLess(content.index("Type DELETE to confirm purge"),
+                        content.index("systemctl stop x-tunnel-speedtest.timer"))
+        self.assertLess(content.index("xt_unit_owned"),
+                        content.index("systemctl stop x-tunnel-speedtest.timer"))
+        self.assertIn("pidof is required", content)
 
     def test_private_bootstrap_never_uses_main_or_openwrt_branch(self):
         content = (ROOT / "quick-install.sh").read_text(encoding="utf-8")
