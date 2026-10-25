@@ -165,7 +165,9 @@ done
 # Once all owned units are stopped, do not remove our core if some OTHER
 # program is still using the shared Go binary.
 if [ "$REMOVE_KERNEL" -eq 1 ]; then
-    if command -v pidof >/dev/null 2>&1 && pidof x-tunnel >/dev/null 2>&1; then
+    command -v pidof >/dev/null 2>&1 ||
+        fail 'pidof is required to confirm no shared X-Tunnel process is running.'
+    if pidof x-tunnel >/dev/null 2>&1; then
         fail 'Another x-tunnel process still runs; refusing to delete shared binary.'
     fi
     owned_kernel
