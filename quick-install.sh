@@ -137,9 +137,8 @@ if [ "$MENU_MODE" -eq 1 ]; then
  trap - EXIT HUP INT TERM
  exec /bin/sh "$PROJECT_DIR/menu.sh"
 fi
-if [ "$created" -eq 1 ] || grep -q 'example.com\|替换为' "$PROJECT_DIR/x-tunnel.yaml"; then
- info "Edit $PROJECT_DIR/x-tunnel.yaml, then rerun."
- exit 0
+if [ "$created" -eq 1 ]; then
+    info "Created a private YAML template; services will be registered even before nodes are configured."
 fi
 
 if [ "$MENU_MODE" -eq 0 ]; then
