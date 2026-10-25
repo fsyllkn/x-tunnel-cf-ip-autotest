@@ -131,7 +131,15 @@ fi
 command -v systemctl >/dev/null 2>&1 ||
     fail 'systemctl is required on Debian/Ubuntu LXC to remove managed services.'
 
-# Stop the timer first to prevent scheduled restarts, then the Bot and core.
+# Disable/stop the timer BEFORE enumerating transient workers, otherwise
+# the timer could schedule new tests while we remove existing instances.
+if [ -f "$UNIT_DIR/x-tunnel-speedtest.timer" ]; then
+    if ! systemctl stop x-tunnel-speedtest.timer >/dev/null 2>&1; then
+        systemctl is-active --quiet x-tunnel-speedtest.timer &&
+            fail 'Cannot stop scheduled speedtest timer.'
+    fi
+    systemctl disable x-tunnel-speedtest.timer >/dev/null 2>&1 || true
+fi
 # Individual single-IP tests are transient template instances; stopping only
 # x-tunnel-speedtest-single@.service does not stop active instances.
 if [ -f "$UNIT_DIR/x-tunnel-speedtest-single@.service" ]; then
@@ -145,6 +153,7 @@ if [ -f "$UNIT_DIR/x-tunnel-speedtest-single@.service" ]; then
     done
 fi
 for unit in $UNITS; do
+    [ "$unit" = x-tunnel-speedtest.timer ] && continue  # already disabled first
     [ -f "$UNIT_DIR/$unit" ] || continue
     if ! systemctl stop "$unit" >/dev/null 2>&1; then
         if systemctl is-active --quiet "$unit"; then
