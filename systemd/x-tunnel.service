@@ -1,3 +1,4 @@
+# Managed-by: x-tunnel-cf-ip-autotest (lxc/systemd)
 [Unit]
 Description=X-Tunnel client supervisor
 Wants=network-online.target
