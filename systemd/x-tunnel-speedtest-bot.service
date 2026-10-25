@@ -1,3 +1,4 @@
+# Managed-by: x-tunnel-cf-ip-autotest (lxc/systemd)
 [Unit]
 Description=Dedicated Telegram bot adapter for X-Tunnel speed tests
 Wants=network-online.target
