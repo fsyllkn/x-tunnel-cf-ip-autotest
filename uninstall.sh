@@ -140,20 +140,36 @@ if [ -f "$UNIT_DIR/x-tunnel-speedtest.timer" ]; then
     fi
     systemctl disable x-tunnel-speedtest.timer >/dev/null 2>&1 || true
 fi
-# Individual single-IP tests are transient template instances; stopping only
-# x-tunnel-speedtest-single@.service does not stop active instances.
+# A template (@.service) is not an instance. NEVER pass it to
+# systemctl stop/disable: systemd rejects that unit name. Enumerate real
+# instances in both loaded units and unit-file registrations (the latter
+# catches enabled-but-currently-inactive instances).
 if [ -f "$UNIT_DIR/x-tunnel-speedtest-single@.service" ]; then
-    instances=$(systemctl list-units --all --no-legend --no-pager \
-        --type=service 'x-tunnel-speedtest-single@*.service' |
-        awk '{for(i=1;i<=NF;i++) if($i ~ /^x-tunnel-speedtest-single@.*\.service$/) print $i}') ||
-        fail 'Cannot enumerate running single-IP workers; refusing incomplete uninstall.'
+    loaded_instances=$(systemctl list-units --all --no-legend --no-pager \
+        --type=service 'x-tunnel-speedtest-single@*.service') ||
+        fail 'Cannot enumerate loaded single-IP workers; refusing incomplete uninstall.'
+    registered_instances=$(systemctl list-unit-files --all --no-legend --no-pager \
+        'x-tunnel-speedtest-single@*.service') ||
+        fail 'Cannot enumerate registered single-IP workers; refusing incomplete uninstall.'
+    instances=$(printf '%s\n%s\n' "$loaded_instances" "$registered_instances" |
+        awk '{for(i=1;i<=NF;i++) if ($i ~ /^x-tunnel-speedtest-single@[^@[:space:]]+\\.service$/) print $i}' |
+        sort -u)
     for instance in $instances; do
-        systemctl stop "$instance" ||
-            fail "Cannot stop $instance; service files and configuration retained."
+        if ! systemctl stop "$instance" >/dev/null 2>&1; then
+            systemctl is-active --quiet "$instance" &&
+                fail "Cannot stop running $instance; refusing incomplete uninstall."
+        fi
+        if systemctl is-enabled --quiet "$instance" 2>/dev/null; then
+            systemctl disable "$instance" ||
+                fail "Cannot disable enabled $instance; refusing incomplete uninstall."
+        fi
     done
 fi
 for unit in $UNITS; do
-    [ "$unit" = x-tunnel-speedtest.timer ] && continue  # already disabled first
+    case "$unit" in
+        x-tunnel-speedtest.timer) continue ;; # already stopped and disabled
+        x-tunnel-speedtest-single@.service) continue ;; # template; never stop/disable
+    esac
     [ -f "$UNIT_DIR/$unit" ] || continue
     if ! systemctl stop "$unit" >/dev/null 2>&1; then
         if systemctl is-active --quiet "$unit"; then
@@ -197,7 +213,7 @@ if [ "$REMOVE_KERNEL" -eq 1 ]; then
     rm -f "$KERNEL_PATH"
     info "Removed verified project-owned Go kernel $KERNEL_PATH"
 fi
-info 'X-Tunnel services, active timer and project-managed shortcuts removed.'
+info 'X-Tunnel service units, timer, actual single-IP worker instances and owned shortcuts removed.'
 if [ "$PURGE" -eq 1 ]; then
     cd /
     rm -rf "$PROJECT_DIR"
