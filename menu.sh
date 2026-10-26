@@ -519,7 +519,7 @@ show_menu() {
   say '  【导出与维护】'
   say '  17) 导出 Clash/V2Ray/SOCKS5 节点'
   say '  18) 修复已验证的 X-Tunnel 内核'
-  say '  19) 卸载服务（保留配置）'
+  say '  19) 卸载管理（支持完整清理）'
   say '   0) 退出'
 }
 while :; do
@@ -592,9 +592,35 @@ while :; do
     18) repair_kernel;;
     19)
       root_only || continue
-      if ask '卸载服务和定时任务（保留配置与内核）？'; then
-        sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败。'
-      fi;;
+      if [ "$PLATFORM" != systemd ]; then
+        say 'LXC 完整卸载仅支持 systemd 平台。'
+        continue
+      fi
+      say '1) 卸载服务和定时任务（保留配置、数据和内核）'
+      say '2) 完整卸载项目及配置数据（保留共享内核）'
+      say '3) 完整卸载项目、配置及已验证为本项目安装的内核'
+      say '0) 取消'
+      printf '选择卸载模式: '
+      IFS= read -r uninstall_mode || continue
+      case "$uninstall_mode" in
+        1) sh "$PROJECT_DIR/uninstall.sh" || say '卸载失败；请检查错误。' ;;
+        2|3)
+          if [ "$uninstall_mode" = 3 ]; then
+            sh "$PROJECT_DIR/uninstall.sh" --purge --remove-kernel || {
+              say '完整卸载失败或取消，检查上方提示。'
+              continue
+            }
+          else
+            sh "$PROJECT_DIR/uninstall.sh" --purge || {
+              say '完整卸载失败或取消，检查上方提示。'
+              continue
+            }
+          fi
+          say '项目目录已卸载，退出管理菜单。'
+          exit 0 ;;
+        0) ;;
+        *) say '无效选择。' ;;
+      esac;;
     0|q|Q) break;;
     *) say '无效选择。';;
   esac
