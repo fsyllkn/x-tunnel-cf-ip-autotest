@@ -38,8 +38,18 @@ case "$1" in
  list-units)
    printf '%s\n' 'x-tunnel-speedtest-single@104.17.0.1.service loaded active running example'
    exit 0 ;;
+ list-unit-files)
+   printf '%s\n' 'x-tunnel-speedtest-single@.service disabled' \
+     'x-tunnel-speedtest-single@104.17.0.1.service disabled' \
+     'x-tunnel-speedtest-single@104.17.0.2.service enabled'
+   exit 0 ;;
  is-active)
    exit 1 ;;
+ is-enabled)
+   case "$*" in
+     *104.17.0.2.service*) exit 0 ;;
+     *) exit 1 ;;
+   esac ;;
  *) exit 0 ;;
 esac
 MOCKSYSTEMCTL
@@ -105,7 +115,236 @@ done
 [ -f "$PROJECT/x-tunnel.yaml" ]
 [ -f "$TMP/shared-kernel" ]
 grep -q '^stop x-tunnel-speedtest.timer$' "$XT_TEST_LOG"
-grep -q '^stop x-tunnel-speedtest-single@104.17.0.1.service$' "$XT_TEST_LOG"
+grep -q '^stop x-tunnel-speedtest-single@104.17.0.1.service
+grep -q '^daemon-reload$' "$XT_TEST_LOG"
+
+echo 'TEST repeated uninstall is idempotent'
+sh "$PROJECT/uninstall.sh" > "$TMP/result"
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'TEST --purge asks for confirmation before changing anything'
+python3 - "$PROJECT/uninstall.sh" NO --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 1, "refused purge should fail"
+PY
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$TMP/shared-kernel" ]
+
+echo 'TEST confirmed --purge removes the entire project but retains shared binary'
+python3 - "$PROJECT/uninstall.sh" DELETE --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "confirmed purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+
+echo 'TEST --purge --remove-kernel removes only recorded SHA256 owned binary'
+mkdir -p "$PROJECT/systemd" "$PROJECT/runtime"
+cp "$BASE/uninstall.sh" "$PROJECT/uninstall.sh"
+cp "$BASE/systemd/ownership.sh" "$PROJECT/systemd/ownership.sh"
+sha=$(sha256sum "$TMP/shared-kernel" | awk '{print $1}')
+printf '%s  %s\n' "$sha" "$TMP/shared-kernel" > "$PROJECT/runtime/managed-kernel.sha256"
+python3 - "$PROJECT/uninstall.sh" DELETE --purge --remove-kernel <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "verified kernel purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ ! -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'Mock-only LXC uninstall regression passed.'
+ "$XT_TEST_LOG"
+grep -q '^stop x-tunnel-speedtest-single@104.17.0.2.service
+grep -q '^daemon-reload$' "$XT_TEST_LOG"
+
+echo 'TEST repeated uninstall is idempotent'
+sh "$PROJECT/uninstall.sh" > "$TMP/result"
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'TEST --purge asks for confirmation before changing anything'
+python3 - "$PROJECT/uninstall.sh" NO --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 1, "refused purge should fail"
+PY
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$TMP/shared-kernel" ]
+
+echo 'TEST confirmed --purge removes the entire project but retains shared binary'
+python3 - "$PROJECT/uninstall.sh" DELETE --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "confirmed purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+
+echo 'TEST --purge --remove-kernel removes only recorded SHA256 owned binary'
+mkdir -p "$PROJECT/systemd" "$PROJECT/runtime"
+cp "$BASE/uninstall.sh" "$PROJECT/uninstall.sh"
+cp "$BASE/systemd/ownership.sh" "$PROJECT/systemd/ownership.sh"
+sha=$(sha256sum "$TMP/shared-kernel" | awk '{print $1}')
+printf '%s  %s\n' "$sha" "$TMP/shared-kernel" > "$PROJECT/runtime/managed-kernel.sha256"
+python3 - "$PROJECT/uninstall.sh" DELETE --purge --remove-kernel <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "verified kernel purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ ! -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'Mock-only LXC uninstall regression passed.'
+ "$XT_TEST_LOG"
+grep -q '^disable x-tunnel-speedtest-single@104.17.0.2.service
+grep -q '^daemon-reload$' "$XT_TEST_LOG"
+
+echo 'TEST repeated uninstall is idempotent'
+sh "$PROJECT/uninstall.sh" > "$TMP/result"
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'TEST --purge asks for confirmation before changing anything'
+python3 - "$PROJECT/uninstall.sh" NO --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 1, "refused purge should fail"
+PY
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$TMP/shared-kernel" ]
+
+echo 'TEST confirmed --purge removes the entire project but retains shared binary'
+python3 - "$PROJECT/uninstall.sh" DELETE --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "confirmed purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+
+echo 'TEST --purge --remove-kernel removes only recorded SHA256 owned binary'
+mkdir -p "$PROJECT/systemd" "$PROJECT/runtime"
+cp "$BASE/uninstall.sh" "$PROJECT/uninstall.sh"
+cp "$BASE/systemd/ownership.sh" "$PROJECT/systemd/ownership.sh"
+sha=$(sha256sum "$TMP/shared-kernel" | awk '{print $1}')
+printf '%s  %s\n' "$sha" "$TMP/shared-kernel" > "$PROJECT/runtime/managed-kernel.sha256"
+python3 - "$PROJECT/uninstall.sh" DELETE --purge --remove-kernel <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "verified kernel purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ ! -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'Mock-only LXC uninstall regression passed.'
+ "$XT_TEST_LOG"
+if grep -Eq '^(stop|disable) x-tunnel-speedtest-single@\\.service
+grep -q '^daemon-reload$' "$XT_TEST_LOG"
+
+echo 'TEST repeated uninstall is idempotent'
+sh "$PROJECT/uninstall.sh" > "$TMP/result"
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'TEST --purge asks for confirmation before changing anything'
+python3 - "$PROJECT/uninstall.sh" NO --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 1, "refused purge should fail"
+PY
+[ -f "$PROJECT/x-tunnel.yaml" ]
+[ -f "$TMP/shared-kernel" ]
+
+echo 'TEST confirmed --purge removes the entire project but retains shared binary'
+python3 - "$PROJECT/uninstall.sh" DELETE --purge <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "confirmed purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+
+echo 'TEST --purge --remove-kernel removes only recorded SHA256 owned binary'
+mkdir -p "$PROJECT/systemd" "$PROJECT/runtime"
+cp "$BASE/uninstall.sh" "$PROJECT/uninstall.sh"
+cp "$BASE/systemd/ownership.sh" "$PROJECT/systemd/ownership.sh"
+sha=$(sha256sum "$TMP/shared-kernel" | awk '{print $1}')
+printf '%s  %s\n' "$sha" "$TMP/shared-kernel" > "$PROJECT/runtime/managed-kernel.sha256"
+python3 - "$PROJECT/uninstall.sh" DELETE --purge --remove-kernel <<'PY'
+import os, pty, sys
+pid, tty = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1], *sys.argv[3:]])
+os.write(tty, sys.argv[2].encode() + b"\n")
+_, status = os.waitpid(pid, 0)
+os.close(tty)
+assert os.waitstatus_to_exitcode(status) == 0, "verified kernel purge failed"
+PY
+[ ! -d "$PROJECT" ]
+[ ! -f "$TMP/shared-kernel" ]
+[ -f "$UNITS/unrelated.service" ]
+echo 'Mock-only LXC uninstall regression passed.'
+ "$XT_TEST_LOG"; then
+    echo 'A template was incorrectly passed as a concrete systemd instance' >&2; exit 1
+fi
 grep -q '^daemon-reload$' "$XT_TEST_LOG"
 
 echo 'TEST repeated uninstall is idempotent'
