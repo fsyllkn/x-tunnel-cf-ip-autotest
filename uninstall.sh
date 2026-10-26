@@ -152,7 +152,7 @@ if [ -f "$UNIT_DIR/x-tunnel-speedtest-single@.service" ]; then
         'x-tunnel-speedtest-single@*.service') ||
         fail 'Cannot enumerate registered single-IP workers; refusing incomplete uninstall.'
     instances=$(printf '%s\n%s\n' "$loaded_instances" "$registered_instances" |
-        awk '{for(i=1;i<=NF;i++) if ($i ~ /^x-tunnel-speedtest-single@[^@[:space:]]+\\.service$/) print $i}' |
+        awk '{for(i=1;i<=NF;i++) if ($i ~ /^x-tunnel-speedtest-single@[^@[:space:]]+\.service$/) print $i}' |
         sort -u)
     for instance in $instances; do
         if ! systemctl stop "$instance" >/dev/null 2>&1; then
