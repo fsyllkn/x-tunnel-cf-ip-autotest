@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import errno
 import hashlib
 import ipaddress
 import json
@@ -71,8 +72,24 @@ def port_available(port, listen_hosts, reusable_bindings):
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind((host, port))
-            except OSError:
-                return False
+            except OSError as error:
+                if error.errno == errno.EADDRINUSE:
+                    # Only a genuine port collision should trigger fallback.
+                    return False
+                if error.errno == errno.EADDRNOTAVAIL:
+                    raise ValueError(
+                        "invalid defaults.listen_hosts address %s: it is not assigned "
+                        "to this container/host (cannot bind %s:%d, EADDRNOTAVAIL). "
+                        "Run 'ip -br addr' inside this container and use 127.0.0.1 "
+                        "or its own LAN IP instead of another device's IP"
+                        % (host, host, port)
+                    ) from error
+                raise ValueError(
+                    "cannot bind SOCKS5 listener %s:%d: [Errno %s] %s "
+                    "(not a port-in-use conflict; check listener address, "
+                    "permissions and address-family support)"
+                    % (host, port, error.errno, error.strerror or str(error))
+                ) from error
     return True
 
 
@@ -310,14 +327,17 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
         if preferred_port < 1 or preferred_port > 65535:
             raise ValueError("node %s port is out of range" % name)
         if check_port_availability:
-            port = allocate_port(
-                preferred_port,
-                listen_hosts,
-                used_ports,
-                reusable_bindings,
-                name,
-                on_port_conflict,
-            )
+            try:
+                port = allocate_port(
+                    preferred_port,
+                    listen_hosts,
+                    used_ports,
+                    reusable_bindings,
+                    name,
+                    on_port_conflict,
+                )
+            except ValueError as error:
+                raise ValueError("node %s: %s" % (name, error)) from error
         else:
             if preferred_port in used_ports:
                 raise ValueError("duplicate SOCKS5 port %d for node %s" % (preferred_port, name))
