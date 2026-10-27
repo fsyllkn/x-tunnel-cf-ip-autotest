@@ -386,6 +386,7 @@ manage_timer() {
         chosen=${chosen:-$saved}
         python3 "$SYSTEMD_TIMER_CLI" validate "$chosen" || return
         if [ -f /etc/systemd/system/x-tunnel-speedtest.service ] &&
+           [ -f /etc/systemd/system/x-tunnel-speedtest.timer ] &&
            (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest' >/dev/null 2>&1); then
           python3 "$SYSTEMD_TIMER_CLI" enable "$chosen" || say '启用失败。'
         else
