@@ -39,6 +39,7 @@ class LinuxTimerMenuTests(unittest.TestCase):
             "root_only() { :; }",
             "say() { printf '%s\\n' \"$*\"; }",
             "timer_status() { printf '已开启 (18:00)'; }",
+            'systemctl() { [ "$1" = cat ] && [ "${MISSING_UNITS:-0}" = 0 ]; }',
             """python3() {
   if [ "$1" = "-c" ]; then return 0; fi
   if [ "$1" != "$SYSTEMD_TIMER_CLI" ]; then return 127; fi
@@ -56,11 +57,11 @@ sh() { printf 'install:%s\\n' "$*" >> "$LOGFILE"; }""",
             "exit 0",
         ))
 
-    def invoke(self, input_text):
+    def invoke(self, input_text, missing_units=False):
         p = subprocess.run(
             ["/bin/sh", "-c", self.menu_shell()],
             input=input_text, capture_output=True, text=True,
-            env={**os.environ, "LOGFILE": str(self.log)},
+            env={**os.environ, "LOGFILE": str(self.log), "MISSING_UNITS": "1" if missing_units else "0"},
             timeout=10, check=False,
         )
         self.assertEqual(p.returncode, 0, p.stderr + "\n" + p.stdout)
@@ -70,15 +71,13 @@ sh() { printf 'install:%s\\n' "$*" >> "$LOGFILE"; }""",
     def test_enable_custom_daily_schedule(self):
         result, calls = self.invoke("1\n06:45\n")
         self.assertIn("每日测速时间", result.stdout)
-        self.assertTrue(
-            "enable:06:45" in calls or "--timer-at=06:45" in calls, calls,
-        )
+        self.assertEqual(calls, "enable:06:45\\n".replace("\\n", "\n"))
+        self.assertNotIn("install:", calls)
+        self.assertNotIn("speedtest.service", calls)
 
     def test_default_schedule_on_blank_entry(self):
         _, calls = self.invoke("1\n\n")
-        self.assertTrue(
-            "enable:18:00" in calls or "--timer-at=18:00" in calls, calls,
-        )
+        self.assertEqual(calls.strip(), "enable:18:00")
 
     def test_reject_invalid_time_without_changes(self):
         _, calls = self.invoke("1\n24:99\n")
@@ -87,6 +86,11 @@ sh() { printf 'install:%s\\n' "$*" >> "$LOGFILE"; }""",
     def test_disable_schedule(self):
         _, calls = self.invoke("2\n")
         self.assertIn("disable:", calls)
+
+    def test_missing_units_does_not_install_or_launch_speedtest(self):
+        result, calls = self.invoke("1\n06:45\n", missing_units=True)
+        self.assertIn("尚未安装", result.stdout)
+        self.assertEqual(calls, "")
 
     def test_status_displays_saved_hhmm(self):
         declaration = 'SYSTEMD_TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"'
