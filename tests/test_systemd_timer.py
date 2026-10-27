@@ -46,7 +46,7 @@ class SystemdTimerTests(unittest.TestCase):
 
         def fake_systemctl(*args, **kwargs):
             commands.append(args)
-            ret = 1 if args[0] == "is-enabled" else 0
+            ret = 1 if args[0] in ("is-enabled", "is-active") else 0
             return subprocess.CompletedProcess(list(args), ret)
 
         with mock.patch.object(timer.os, "geteuid", return_value=0), \
@@ -55,8 +55,11 @@ class SystemdTimerTests(unittest.TestCase):
             self.assertEqual(timer.main(), 0)
         self.assertEqual(timer.saved_time(), "21:30")
         self.assertIn(("daemon-reload",), commands)
-        self.assertIn(("enable", "--now", timer.TIMER), commands)
+        self.assertIn(("enable", timer.TIMER), commands)
+        self.assertIn(("start", timer.TIMER), commands)
         self.assertNotIn(("restart", timer.TIMER), commands)
+        self.assertFalse(any("--now" in cmd for cmd in commands))
+        self.assertFalse(any("x-tunnel-speedtest.service" in cmd for cmd in commands))
         self.assertTrue(all("x-tunnel.service" not in item for cmd in commands for item in cmd))
 
     def test_reschedule_enabled_timer_without_core_restart(self):
@@ -71,8 +74,27 @@ class SystemdTimerTests(unittest.TestCase):
                 mock.patch.object(sys, "argv", ["speedtest-timer.py", "enable", "08:10"]):
             self.assertEqual(timer.main(), 0)
         self.assertIn(("restart", timer.TIMER), commands)
+        self.assertNotIn(("start", timer.TIMER), commands)
+        self.assertFalse(any("x-tunnel-speedtest.service" in cmd for cmd in commands))
         self.assertEqual(timer.saved_time(), "08:10")
 
+
+    def test_repeat_enable_same_time_leaves_running_timer_untouched(self):
+        self.assertTrue(timer.write_schedule("09:30"))
+        commands = []
+
+        def fake_systemctl(*args, **kwargs):
+            commands.append(args)
+            return subprocess.CompletedProcess(list(args), 0)
+
+        with mock.patch.object(timer.os, "geteuid", return_value=0), \
+                mock.patch.object(timer, "systemctl", side_effect=fake_systemctl), \
+                mock.patch.object(sys, "argv", ["speedtest-timer.py", "enable", "09:30"]):
+            self.assertEqual(timer.main(), 0)
+        self.assertIn(("enable", timer.TIMER), commands)
+        self.assertNotIn(("restart", timer.TIMER), commands)
+        self.assertNotIn(("start", timer.TIMER), commands)
+        self.assertFalse(any("x-tunnel-speedtest.service" in cmd for cmd in commands))
 
     def test_disable_retains_time_and_never_touches_core(self):
         self.assertTrue(timer.write_schedule("06:45"))
