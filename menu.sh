@@ -4,6 +4,7 @@ set -u
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 cd "$PROJECT_DIR" || exit 1
 TIMER_SCRIPT="$PROJECT_DIR/openwrt/speedtest-timer.sh"
+SYSTEMD_TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"
 if [ -f /etc/openwrt_release ] || { [ -f /etc/rc.common ] && [ -x /sbin/procd ]; }; then
   PLATFORM=openwrt
 elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
@@ -43,7 +44,18 @@ timer_status() {
       printf '未开启'
     fi
   elif [ "$PLATFORM" = systemd ]; then
-    if systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then printf '已开启'; else printf '未开启'; fi
+    if [ -f "$SYSTEMD_TIMER_CLI" ] && command -v python3 >/dev/null 2>&1; then
+      scheduled=$(python3 "$SYSTEMD_TIMER_CLI" status 2>/dev/null) || scheduled=unknown
+      case "$scheduled" in
+        disabled) printf '未开启' ;;
+        unknown) printf '状态读取失败' ;;
+        *) printf '已开启 (%s)' "$scheduled" ;;
+      esac
+    elif systemctl is-enabled --quiet x-tunnel-speedtest.timer 2>/dev/null; then
+      printf '已开启（无法读取时间）'
+    else
+      printf '未开启'
+    fi
   else printf '未知'; fi
 }
 prepare() {
@@ -343,11 +355,7 @@ else:
 manage_timer() {
   root_only || return
   say "当前: $(timer_status)"
-  if [ "$PLATFORM" = openwrt ]; then
-    say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
-  else
-    say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
-  fi
+  say '1) 开启/修改每日测速时间  2) 关闭自动测速  0) 返回'
   printf '选择: '; IFS= read -r option || return
   case "$option" in
     1)
@@ -377,10 +385,12 @@ manage_timer() {
         IFS= read -r chosen || return
         chosen=${chosen:-$saved}
         python3 "$SYSTEMD_TIMER_CLI" validate "$chosen" || return
-        if [ -f /etc/systemd/system/x-tunnel-speedtest.service ]; then
+        if [ -f /etc/systemd/system/x-tunnel-speedtest.service ] &&
+           [ -f /etc/systemd/system/x-tunnel-speedtest.timer ] &&
+           (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest' >/dev/null 2>&1); then
           python3 "$SYSTEMD_TIMER_CLI" enable "$chosen" || say '启用失败。'
         else
-          say '首次启用将注册测速服务，可能重启 X-Tunnel 核心。'
+          say '测速服务尚未安装或依赖缺失，执行安装预检后注册服务（可能重启 X-Tunnel 核心）。'
           sh "$PROJECT_DIR/install.sh" "--timer-at=$chosen" || say '安装/启用失败。'
         fi
       fi ;;
@@ -388,8 +398,11 @@ manage_timer() {
       if [ "$PLATFORM" = openwrt ]; then
         [ -f "$TIMER_SCRIPT" ] || { say '找不到定时管理脚本，请先更新 openwrt 源码。'; return; }
         sh "$TIMER_SCRIPT" disable || say '关闭失败。'
-      else
+      elif [ "$PLATFORM" = systemd ]; then
+        [ -f "$SYSTEMD_TIMER_CLI" ] || { say 'Linux 定时管理脚本不存在，请先更新 main 分支。'; return 1; }
         python3 "$SYSTEMD_TIMER_CLI" disable || say '关闭失败。'
+      else
+        say '不支持的服务管理系统。'
       fi ;;
     0) return ;;
   esac

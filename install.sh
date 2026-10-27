@@ -43,15 +43,6 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 [ "$WITH_BOT" -eq 0 ] || [ "$DISABLE_BOT" -eq 0 ] || { echo "Cannot enable and disable Bot together." >&2; exit 2; }
-if [ "$OPENWRT" -eq 0 ] && [ "$ENABLE_TIMER" -eq 1 ]; then
-    TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"
-    [ -f "$TIMER_CLI" ] || { echo "Missing systemd timer manager." >&2; exit 1; }
-    if [ -n "$TIMER_AT" ]; then
-        python3 "$TIMER_CLI" validate "$TIMER_AT" || exit 2
-    else
-        TIMER_AT=$(python3 "$TIMER_CLI" saved)
-    fi
-fi
 printf 'Detected platform: %s; Bot: %s; speedtest: %s\n' "$PLATFORM" "$WITH_BOT" "$WITH_SPEEDTEST"
 if [ "$OPENWRT" -eq 0 ]; then
     if ! command -v python3 >/dev/null 2>&1 ||
@@ -67,6 +58,17 @@ if [ "$OPENWRT" -eq 0 ]; then
     fi
 fi
 python3 -c 'import sys; assert sys.version_info >= (3, 9), "Python 3.9+ required for dedicated child UID isolation"' || exit 1
+
+# Schedule validation needs Python; install apt dependencies before invoking it.
+if [ "$OPENWRT" -eq 0 ] && [ "$ENABLE_TIMER" -eq 1 ]; then
+    TIMER_CLI="$PROJECT_DIR/systemd/speedtest-timer.py"
+    [ -f "$TIMER_CLI" ] || { echo "Missing systemd timer manager." >&2; exit 1; }
+    if [ -n "$TIMER_AT" ]; then
+        python3 "$TIMER_CLI" validate "$TIMER_AT" || exit 2
+    else
+        TIMER_AT=$(python3 "$TIMER_CLI" saved)
+    fi
+fi
 
 required_commands="ip sed cp chmod mkdir mv python3 uname"
 if [ "$OPENWRT" -eq 0 ]; then
