@@ -74,5 +74,33 @@ class SystemdTimerTests(unittest.TestCase):
         self.assertEqual(timer.saved_time(), "08:10")
 
 
+    def test_disable_retains_time_and_never_touches_core(self):
+        self.assertTrue(timer.write_schedule("06:45"))
+        commands = []
+
+        def fake_systemctl(*args, **kwargs):
+            commands.append(args)
+            result = 1 if args[0] == "is-enabled" else 0
+            return subprocess.CompletedProcess(args, result)
+
+        with mock.patch.object(timer.os, "geteuid", return_value=0), \
+                mock.patch.object(timer, "systemctl", side_effect=fake_systemctl), \
+                mock.patch.object(sys, "argv", ["speedtest-timer.py", "disable"]):
+            self.assertEqual(timer.main(), 0)
+        self.assertEqual(timer.saved_time(), "06:45")
+        self.assertIn(("disable", "--now", timer.TIMER), commands)
+        self.assertTrue(all("x-tunnel.service" not in a for cmd in commands for a in cmd))
+
+    def test_status_tracks_enabled_state_and_saved_time(self):
+        self.assertTrue(timer.write_schedule("07:15"))
+        output = []
+        with mock.patch.object(timer, "is_enabled", side_effect=[True, False]), \
+                mock.patch("builtins.print", side_effect=output.append), \
+                mock.patch.object(sys, "argv", ["speedtest-timer.py", "status"]):
+            self.assertEqual(timer.main(), 0)
+            self.assertEqual(timer.main(), 0)
+        self.assertEqual(output, ["07:15", "disabled"])
+
+
 if __name__ == "__main__":
     unittest.main()
