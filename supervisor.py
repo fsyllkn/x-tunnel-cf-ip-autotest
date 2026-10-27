@@ -6,7 +6,6 @@ import json
 import os
 import re
 import signal
-import shlex
 import socket
 import subprocess
 import sys
@@ -15,7 +14,7 @@ import time
 from pathlib import Path
 
 import yaml
-from project_settings import PROJECT_ENV_FILE, load_project_env, telegram_proxy_chain
+from project_settings import load_project_env, telegram_proxy_chain, read_telegram_credentials, get_process_uid
 
 
 load_project_env()
@@ -32,7 +31,6 @@ if not PROVIDER_PATH.is_absolute():
 WATCHED_FILES = (
     PROVIDER_PATH,
     BASE_DIR / "x-tunnel-singbox-template.json",
-    PROJECT_ENV_FILE,
 )
 DEFAULT_MAX_NODES = 5
 DEFAULT_PROCESS_UID = 29002
@@ -42,9 +40,6 @@ POLL_INTERVAL = 5
 STALE_X_TUNNEL_WAIT = 5.0
 UNKNOWN_SOCKET_WAIT = 1.0
 PORT_RELEASE_POLL = 0.25
-BOT_CONFIG_FILE = Path(os.environ.get(
-    "X_TUNNEL_BOT_CONFIG", str(BASE_DIR / "speedtest-bot.env")
-))
 notified_port_conflicts = set()
 
 logging.basicConfig(
@@ -137,21 +132,8 @@ def wait_for_startup_port_release(port, listen_hosts, reusable_bindings, owners)
 
 
 def read_bot_credentials():
-    values = {}
-    try:
-        lines = BOT_CONFIG_FILE.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return "", ""
-    for line in lines:
-        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", line)
-        if not match:
-            continue
-        try:
-            parsed = shlex.split(match.group(2), comments=True)
-        except ValueError:
-            continue
-        values[match.group(1)] = parsed[0] if parsed else ""
-    return values.get("TG_TOKEN", ""), values.get("TG_CHATID", "")
+    # The same x-tunnel.yaml is used by the Bot, progress notifier and core.
+    return read_telegram_credentials(require_chat_id=False)
 
 
 def send_port_conflict_notification(event):
@@ -284,19 +266,14 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
         nodes = nodes[:max_nodes]
 
     first_port = int(defaults.get("first_port", 32322))
-    configured_hosts = os.environ.get("X_TUNNEL_LISTEN_HOSTS")
-    if configured_hosts is None:
-        listen_hosts = defaults.get("listen_hosts", ["127.0.0.1"])
-    else:
-        listen_hosts = [host.strip() for host in configured_hosts.split(",") if host.strip()]
-        if not listen_hosts:
-            listen_hosts = ["127.0.0.1"]
+    # Single source of truth. LAN listeners live ONLY in defaults.listen_hosts.
+    listen_hosts = defaults.get("listen_hosts", ["127.0.0.1"])
     if not isinstance(listen_hosts, list) or not listen_hosts:
         raise ValueError("defaults.listen_hosts must be a non-empty list")
     try:
         listen_hosts = [str(ipaddress.ip_address(str(host))) for host in listen_hosts]
     except ValueError as error:
-        raise ValueError("listen hosts must be IP addresses; configure X_TUNNEL_LISTEN_HOSTS") from error
+        raise ValueError("defaults.listen_hosts must contain numeric IP addresses") from error
     if first_port < 1 or first_port > 65535:
         raise ValueError("defaults.first_port must be between 1 and 65535")
 
@@ -357,10 +334,7 @@ def read_specs(reusable_bindings=None, check_port_availability=True, on_port_con
 
 
 def configured_process_uid():
-    raw = os.environ.get("X_TUNNEL_PROCESS_UID", str(DEFAULT_PROCESS_UID)).strip()
-    if not raw.isdecimal():
-        raise ValueError("X_TUNNEL_PROCESS_UID must be a numeric UID")
-    uid = int(raw)
+    uid = get_process_uid()
     if not 1000 <= uid <= 60000:
         raise ValueError("X_TUNNEL_PROCESS_UID must be in 1000..60000, not root")
     # A numeric UID requires no passwd entry, but must not impersonate an

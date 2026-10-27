@@ -1,5 +1,5 @@
 #!/bin/sh
-# Interactive X-Tunnel bootstrap for OpenWrt/procd (apk or opkg).
+# Interactive X-Tunnel bootstrap for Debian/Ubuntu systemd.
 set -eu
 
 REPO_ARCHIVE='https://github.com/fsyllkn/x-tunnel-cf-ip-autotest/archive/refs/heads/main.tar.gz'
@@ -83,7 +83,7 @@ if [ ! -f "$PROJECT_DIR/x-tunnel.yaml" ]; then
  (umask 077; cp "$PROJECT_DIR/x-tunnel.example.yaml" "$PROJECT_DIR/x-tunnel.yaml")
  created=1
 fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then cp "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env"; fi
+# Legacy .env files are migrated during install.sh preflight; never recreate them.
 chmod 600 "$PROJECT_DIR/x-tunnel.yaml"
 # Make the menu available even before the core service has been installed.
 if [ -f "$PROJECT_DIR/menu.sh" ]; then
@@ -108,7 +108,7 @@ if [ "$MENU_MODE" -eq 1 ]; then
  trap - EXIT HUP INT TERM
  exec /bin/sh "$PROJECT_DIR/menu.sh"
 fi
-if [ "$created" -eq 1 ] || grep -q 'example.com\|替换为' "$PROJECT_DIR/x-tunnel.yaml"; then
+if [ "$created" -eq 1 ] || grep -q 'example.com' "$PROJECT_DIR/x-tunnel.yaml"; then
  info "Edit $PROJECT_DIR/x-tunnel.yaml, then rerun."
  exit 0
 fi

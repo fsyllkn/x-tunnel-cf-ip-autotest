@@ -188,17 +188,11 @@ fi
     echo "Missing $PROJECT_DIR/x-tunnel.yaml; copy x-tunnel.example.yaml and configure it." >&2
     exit 1
 }
-if [ "$WITH_BOT" -eq 1 ] && [ ! -f "$PROJECT_DIR/speedtest-bot.env" ]; then
-    copy_with_mode "$PROJECT_DIR/speedtest-bot.env.example" "$PROJECT_DIR/speedtest-bot.env" 0600
-    echo "Created speedtest-bot.env; set TG_TOKEN and TG_CHATID, then rerun --with-bot." >&2
+chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
+if ! (cd "$PROJECT_DIR" && python3 migrate_config.py); then
+    echo "[ERROR] YAML migration failed; running services were not restarted." >&2
     exit 1
 fi
-if [ ! -f "$PROJECT_DIR/project.env" ]; then
-    copy_with_mode "$PROJECT_DIR/project.env.example" "$PROJECT_DIR/project.env" 0644
-fi
-chmod 0600 "$PROJECT_DIR/x-tunnel.yaml"
-[ ! -f "$PROJECT_DIR/speedtest-bot.env" ] || chmod 0600 "$PROJECT_DIR/speedtest-bot.env"
-chmod 0644 "$PROJECT_DIR/project.env"
 
 # OpenWrt's python3-light may omit standard library IDNA codecs.
 # urllib's HTTPS proxy tunnel setup requires this codec.
@@ -221,28 +215,23 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     fi
     exit 1
 }
-PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False)' || {
+PYTHONPATH="$PROJECT_DIR" python3 -c 'import supervisor; supervisor.read_specs(check_port_availability=False); import project_settings; project_settings.get_target_mbps(); project_settings.read_telegram_credentials(require_chat_id=False)' || {
     echo "Invalid x-tunnel.yaml configuration." >&2
     exit 1
 }
-if [ "$WITH_BOT" -eq 1 ]; then
-python3 - "$PROJECT_DIR/speedtest-bot.env" <<'PY'
-import pathlib
-import shlex
-import sys
-
-values = {}
-for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    key, separator, value = line.partition("=")
-    if separator:
-        parsed = shlex.split(value, comments=True)
-        values[key.strip()] = parsed[0] if parsed else ""
-if not values.get("TG_TOKEN") or "替换为" in values["TG_TOKEN"]:
-    raise SystemExit("Set a real TG_TOKEN in speedtest-bot.env first.")
-if not values.get("TG_CHATID", "").isdecimal():
-    raise SystemExit("Set the numeric private TG_CHATID in speedtest-bot.env first.")
-PY
+if [ "$WITH_SPEEDTEST" -eq 1 ]; then
+    (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest') || {
+        echo "[ERROR] CF speedtest dependencies failed preflight; services unchanged." >&2
+        exit 1
+    }
 fi
+if [ "$WITH_BOT" -eq 1 ]; then
+    (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()') || {
+        echo "[ERROR] Set telegram.token and telegram.chat_id in x-tunnel.yaml." >&2
+        exit 1
+    }
+fi
+
 mkdir -p "$PROJECT_DIR/runtime" "$PROJECT_DIR/cfip-data"
 mkdir -p /run/lock
 chmod 0755 "$PROJECT_DIR/runtime"
@@ -325,6 +314,15 @@ else
         fi
     done
 
+    if [ "$WITH_BOT" -eq 0 ] && [ "$DISABLE_BOT" -eq 0 ] &&
+       systemctl is-active --quiet x-tunnel-speedtest-bot.service; then
+        # Running Bot must reload YAML credentials after an .env migration.
+        if ! (cd "$PROJECT_DIR" && python3 -c 'import telegram_speedtest_bot as b; b.read_config()'); then
+            echo "[ERROR] Existing Bot credentials invalid; stop Bot or configure YAML." >&2
+            exit 1
+        fi
+        systemctl restart x-tunnel-speedtest-bot.service
+    fi
     if [ "$DISABLE_BOT" -eq 1 ]; then
         systemctl disable --now x-tunnel-speedtest-bot.service >/dev/null 2>&1 || true
     fi
@@ -333,6 +331,7 @@ else
     fi
 
     if [ -f "$PROJECT_DIR/menu.sh" ]; then
+        mkdir -p /usr/local/bin
         printf '#!/bin/sh\nexec /bin/sh "%s/menu.sh" "$@"\n' "$PROJECT_DIR" > /usr/local/bin/xtunnel-menu
         chmod 0755 /usr/local/bin/xtunnel-menu
     fi

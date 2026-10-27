@@ -33,8 +33,12 @@ if [ -f /etc/openwrt_release ]; then
     fi
 else
     command -v systemctl >/dev/null 2>&1 || { echo 'No supported service manager found.' >&2; exit 1; }
+    # Stop actual services; do not pass a template name without an instance.
+    systemctl disable --now x-tunnel-speedtest-bot.service x-tunnel.service x-tunnel-speedtest.timer >/dev/null 2>&1 || true
+    for unit in $(systemctl list-units --all --no-legend --plain 'x-tunnel-speedtest-single@*.service' | awk '{print $1}'); do
+        systemctl stop "$unit" >/dev/null 2>&1 || true
+    done
     for unit in x-tunnel-speedtest-bot.service x-tunnel.service x-tunnel-speedtest.timer x-tunnel-speedtest.service x-tunnel-speedtest-single@.service; do
-        systemctl disable --now "$unit" >/dev/null 2>&1 || true
         rm -f "/etc/systemd/system/$unit"
     done
     for unit in x-tunnel.service x-tunnel-speedtest.service x-tunnel-speedtest-single@.service; do
@@ -48,7 +52,7 @@ else
     systemctl daemon-reload
 fi
 
-for launcher in /usr/bin/xtunnel-menu /usr/local/bin/xtunnel-menu; do
+for launcher in /usr/bin/x-t /usr/local/bin/x-t /usr/bin/xtunnel-menu /usr/local/bin/xtunnel-menu; do
     if [ -f "$launcher" ] && grep -Fq "$PROJECT_DIR/menu.sh" "$launcher"; then
         rm -f "$launcher"
     fi

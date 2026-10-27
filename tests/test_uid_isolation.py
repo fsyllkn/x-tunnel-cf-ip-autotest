@@ -16,14 +16,20 @@ import supervisor
 
 class UIDIsolationTest(unittest.TestCase):
     def test_default_and_overridden_uid(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(supervisor.configured_process_uid(), 29002)
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "0"}):
+        # UID is configured only in YAML, not inherited from environment.
+        with mock.patch("project_settings.project_settings", return_value={}):
+            with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "0"}):
+                self.assertEqual(supervisor.configured_process_uid(), 29002)
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 0}):
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
-        with mock.patch.dict(os.environ, {"X_TUNNEL_PROCESS_UID": "29003"}), \
-             mock.patch.object(Path, "read_text", return_value="root:x:0:0:root:/root:/bin/sh\n"):
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \
+             mock.patch.object(Path, "read_text", return_value="root:x:0:0:root:/root:/bin/sh\\n"):
             self.assertEqual(supervisor.configured_process_uid(), 29003)
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \
+             mock.patch.object(Path, "read_text", return_value="other:x:29003:29003::/tmp:/bin/sh\\n"):
+            with self.assertRaises(ValueError):
+                supervisor.configured_process_uid()
 
     def test_workdirs_are_per_node_and_private(self):
         with tempfile.TemporaryDirectory() as directory, \
