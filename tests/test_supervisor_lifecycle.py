@@ -56,6 +56,30 @@ class SupervisorLifecycleTests(unittest.TestCase):
                 supervisor.run_supervisor()
         stop_child.assert_called_once_with(child)
 
+    def test_stale_xtunnel_listener_is_not_silently_shifted(self):
+        owners = [{"pid": 501, "name": "X-Tunnel", "is_x_tunnel": True}]
+        with mock.patch.object(supervisor, "port_available", return_value=False) as port_available, \
+             mock.patch.object(supervisor, "port_listener_owners", return_value=owners), \
+             mock.patch.object(supervisor, "wait_for_startup_port_release", return_value=False):
+            with self.assertRaisesRegex(ValueError, "refusing automatic port shift"):
+                supervisor.allocate_port(
+                    32322, ["127.0.0.1"], set(), set(), "node-1"
+                )
+        self.assertEqual(port_available.call_count, 1)
+
+    def test_foreign_listener_still_allows_existing_port_fallback(self):
+        owners = [{"pid": 502, "name": "other program", "is_x_tunnel": False}]
+        def available(port, hosts, reused):
+            return port != 32322
+        with mock.patch.object(supervisor, "port_available", side_effect=available), \
+             mock.patch.object(supervisor, "port_listener_owners", return_value=owners), \
+             mock.patch.object(supervisor, "wait_for_startup_port_release", return_value=False):
+            self.assertEqual(
+                supervisor.allocate_port(
+                    32322, ["127.0.0.1"], set(), set(), "node-1"
+                ), 32323
+            )
+
     def test_unit_kills_service_cgroup_not_just_parent(self):
         service = (
             Path(__file__).resolve().parents[1] / "systemd" / "x-tunnel.service"
