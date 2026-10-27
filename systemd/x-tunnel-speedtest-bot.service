@@ -7,8 +7,6 @@ After=network-online.target
 Type=simple
 WorkingDirectory=@PROJECT_DIR@
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=X_TUNNEL_BOT_CONFIG=@PROJECT_DIR@/speedtest-bot.env
-EnvironmentFile=-@PROJECT_DIR@/project.env
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/telegram_speedtest_bot.py
 Restart=always
 RestartSec=10s
