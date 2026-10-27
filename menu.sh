@@ -385,13 +385,18 @@ manage_timer() {
         IFS= read -r chosen || return
         chosen=${chosen:-$saved}
         python3 "$SYSTEMD_TIMER_CLI" validate "$chosen" || return
-        if [ -f /etc/systemd/system/x-tunnel-speedtest.service ] &&
-           [ -f /etc/systemd/system/x-tunnel-speedtest.timer ] &&
-           (cd "$PROJECT_DIR" && python3 -c 'import cfip_speedtest' >/dev/null 2>&1); then
-          python3 "$SYSTEMD_TIMER_CLI" enable "$chosen" || say '启用失败。'
+        # Timer management must never run the speedtest, install services, or
+        # restart the X-Tunnel core. Installation is a separate explicit action.
+        if [ ! -f /etc/systemd/system/x-tunnel-speedtest.service ] ||
+           [ ! -f /etc/systemd/system/x-tunnel-speedtest.timer ]; then
+          say '定时器或测速服务尚未安装。请先使用菜单 1 安装/修复服务，再返回设置定时时间。'
+          return 1
+        fi
+        if python3 "$SYSTEMD_TIMER_CLI" enable "$chosen"; then
+          say '仅更新每日测速计划；未执行即时测速，也未重启 X-Tunnel 核心。'
         else
-          say '测速服务尚未安装或依赖缺失，执行安装预检后注册服务（可能重启 X-Tunnel 核心）。'
-          sh "$PROJECT_DIR/install.sh" "--timer-at=$chosen" || say '安装/启用失败。'
+          say '设置定时测速失败，请检查 systemd timer 日志。'
+          return 1
         fi
       fi ;;
     2)
