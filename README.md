@@ -18,17 +18,11 @@
 ```bash
 apt-get update
 apt-get install -y curl ca-certificates tar
-sh -c 'curl -fsSL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/main/quick-install.sh | sh'
-```
-
-**注意：** 以上命令对应合并到 `main` 后的正式入口；审查本 PR 期间可先下载分支脚本进行验证。交互方式需要 SSH TTY。运行后自动安装源码到 `/opt/x-tunnel-cf-ip-autotest`，先进入管理菜单；第一次安装请先编辑真实的节点地址、token 和 CF IP，再执行「安装/修复核心服务」。
-
-在交互终端直接运行远端脚本时，推荐：
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/fsyllkn/x-tunnel-cf-ip-autotest/main/quick-install.sh -o /tmp/xtunnel-quick-install.sh
 sh /tmp/xtunnel-quick-install.sh
 ```
+
+**注意：** 以上命令对应合并到 `main` 后的正式入口；审查本 PR 期间可先下载分支脚本进行验证。交互方式需要 SSH TTY，因此不要将安装脚本直接通过管道送入 `sh`。运行后自动安装源码到 `/opt/x-tunnel-cf-ip-autotest`，先进入管理菜单；第一次安装请先编辑真实的节点地址、token 和 CF IP，再执行「安装/修复核心服务」。
 
 **非交互安装**：完成 `x-tunnel.yaml` 配置后，可从项目目录执行 `sh install.sh`（仅核心）、`sh install.sh --with-bot`（Bot）、`sh install.sh --with-speedtest`（测速依赖）、`sh install.sh --timer-at=06:45`（每日测速），或调用 `sh quick-install.sh --core` 拉取最新主分支并部署。安装失败时先看预检错误；不应通过关闭依赖/配置校验绕过故障。
 
