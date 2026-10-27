@@ -167,6 +167,10 @@ def migrate():
                     continue
                 if str(value) == str(existing_settings[field]):
                     continue
+                if field in ("process_uid", "target_mbps"):
+                    if not value.isdecimal():
+                        raise ValueError("invalid numeric legacy setting %s" % legacy_key)
+                    value = int(value)
                 source = replace_template_setting(source, field, value)
                 document = load_yaml(source)
                 changed_keys.append(section + "." + field)
