@@ -249,6 +249,18 @@ def allocate_port(
                     "%s PID %d" % (owner["name"], owner["pid"])
                     for owner in owners
                 ) or "unidentified or transient socket"
+                if port == preferred_port and any(
+                    owner["is_x_tunnel"] for owner in owners
+                ):
+                    # A previous or separately managed X-Tunnel is still
+                    # listening. Choosing the next port would hide possible
+                    # orphaned processes and grow the process count.
+                    raise ValueError(
+                        "SOCKS5 port %d for node %s is still owned by %s; "
+                        "refusing automatic port shift. Inspect systemd cgroup "
+                        "and process parents; do not kill unrelated tunnels."
+                        % (port, node_name, owner_text)
+                    )
                 blocked_ports.append({
                     "port": port,
                     "owner": owner_text,
