@@ -1,19 +1,34 @@
-# X-Tunnel 节点配置。每行格式：名称|服务地址|密钥token|cfip|连接数|端口
-# token、CF IP、连接数留空时使用 defaults 中的值。
-# 未指定端口时，从 first_port 开始按节点顺序递增。
-# max_nodes 是读取的节点数上限，超过上限的节点行会被忽略。
+# X-Tunnel 统一配置（唯一需要编辑的配置文件：x-tunnel.yaml）。
+# 复制为 x-tunnel.yaml；chmod 600 x-tunnel.yaml，包含节点密钥与可选 Telegram Token。
+# 节点行: 名称|服务地址|token|cfip|连接数|端口；留空的字段使用 defaults。
 defaults:
   token: "替换为你的默认密钥"
   cfip: "替换为优选 CF IP"
   connections: 3
   ech: "cloudflare-ech.com"
   dns: "https://doh.pub/dns-query"
+  # 唯一的 SOCKS5 监听配置，不再被 project.env 中空变量覆盖。
+  # 如需局域网 SOCKS5，增加本设备的 LAN IP，并限制 LAN 防火墙允许的客户端。
   listen_hosts:
     - "127.0.0.1"
-    # 需要在局域网使用时，替换成服务端局域网地址并确认防火墙放行。
-    # - "192.168.1.10"
+    # - "192.168.68.11"
   first_port: 32322
+
 max_nodes: 5
 nodes:
   - "节点1|wss://example.com/path:443||||"
   - "节点2|wss://example.com/path:443||||"
+
+# 原 project.env 的变量全部移到这里。变更后 supervisor 会自动感知 YAML。
+settings:
+  provider_path: "runtime/x-tunnel-provider.json"
+  process_uid: 29002
+  local_proxy: "http://127.0.0.1:7890"
+  telegram_proxy: ""
+  target_mbps: 300
+
+# 原 speedtest-bot.env 的变量。Bot 可选；留空时不发送 Telegram 通知。
+# 请勿上传包含真实 Telegram Token 的 x-tunnel.yaml。
+telegram:
+  token: ""
+  chat_id: ""
