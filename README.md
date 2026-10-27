@@ -82,7 +82,7 @@ chmod 600 x-tunnel.yaml.backup
 | 13–16 | 安装/管理/重启/关闭 Telegram Bot |
 | 17–19 | 导出节点、修复内核、卸载服务 |
 
-定时测速可使用 `python3 systemd/speedtest-timer.py status`、`enable 06:45`、`disable`；使用主机本地时区，不会为了修改时间而重启代理节点。
+定时测速可使用 `python3 systemd/speedtest-timer.py status`、`enable 06:45`、`disable`；使用主机本地时区。**菜单 12 修改/启用定时只操作 `x-tunnel-speedtest.timer`，不调用即时测速、不会自动部署缺失的服务，也不会重启 X-Tunnel 核心。** 如缺少测速 service/timer，请明确选择菜单 1 先完成安装。修改成功后使用 `systemctl list-timers --all x-tunnel-speedtest.timer` 核实下次触发时间；仅在未来计划触发时执行测速。需要立即测速请单独选择菜单 11。
 
 ## 服务及故障检查
 
