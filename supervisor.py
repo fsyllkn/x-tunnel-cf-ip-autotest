@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 from project_settings import load_project_env, telegram_proxy_chain, read_telegram_credentials, get_process_uid
+from shellcrash_compat import outbound_process_gid
 
 
 load_project_env()
@@ -405,6 +406,7 @@ def start_child(entry):
     spec = entry["spec"]
     try:
         uid = spec["process_uid"]
+        gid = outbound_process_gid(uid)
         workdir = child_workdir(spec)
         child_env = os.environ.copy()
         child_env["HOME"] = str(workdir)
@@ -414,14 +416,15 @@ def start_child(entry):
             cwd=str(workdir),
             env=child_env,
             user=uid,
-            group=uid,
+            group=gid,
             extra_groups=(),
             umask=0o077,
         )
         entry["restart_at"] = None
         logging.info(
-            "started node %s on SOCKS5 port %d (pid %d, uid %d)",
-            spec["name"], spec["port"], entry["process"].pid, uid,
+            "started node %s on SOCKS5 port %d (pid %d, uid %d, gid %d%s)",
+            spec["name"], spec["port"], entry["process"].pid, uid, gid,
+            "; ShellCrash socket bypass" if gid != uid else "",
         )
     except (OSError, RuntimeError, ValueError):
         logging.exception("failed to start node %s", spec["name"])
