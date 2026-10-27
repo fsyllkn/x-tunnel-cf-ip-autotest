@@ -23,10 +23,10 @@ class UIDIsolationTest(unittest.TestCase):
         with mock.patch("project_settings.project_settings", return_value={"process_uid": 0}):
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
-        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \\
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \
              mock.patch.object(Path, "read_text", return_value="root:x:0:0:root:/root:/bin/sh\\n"):
             self.assertEqual(supervisor.configured_process_uid(), 29003)
-        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \\
+        with mock.patch("project_settings.project_settings", return_value={"process_uid": 29003}), \
              mock.patch.object(Path, "read_text", return_value="other:x:29003:29003::/tmp:/bin/sh\\n"):
             with self.assertRaises(ValueError):
                 supervisor.configured_process_uid()
