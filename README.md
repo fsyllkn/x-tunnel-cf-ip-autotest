@@ -84,6 +84,31 @@ chmod 600 x-tunnel.yaml.backup
 
 定时测速可使用 `python3 systemd/speedtest-timer.py status`、`enable 06:45`、`disable`；使用主机本地时区。**菜单 12 修改/启用定时只操作 `x-tunnel-speedtest.timer`，不调用即时测速、不会自动部署缺失的服务，也不会重启 X-Tunnel 核心。** 如缺少测速 service/timer，请明确选择菜单 1 先完成安装。修改成功后使用 `systemctl list-timers --all x-tunnel-speedtest.timer` 核实下次触发时间；仅在未来计划触发时执行测速。需要立即测速请单独选择菜单 11。
 
+## ShellCrash 兼容与避免代理回环
+
+Debian/Ubuntu 上如果同时启用 ShellCrash 的本机透明代理，X-Tunnel 内核发出的 ECH DoH 请求、WebSocket 连接可能重新被 ShellCrash 接管，表现为 `DNS 查询失败 ... connection reset by peer`。ShellCrash nftables 的本机 OUTPUT 规则以 **socket GID 7890**（`meta skgid 7890 return`）实现绕过；仅给 systemd 的 root 主管进程设置 `Group=7890` 不够，因为 Python 启动 X-Tunnel 子进程时会显式覆盖 GID。
+
+当前 main 的兼容方式：
+
+- 始终保留 `settings.process_uid`（默认 **29002**），供 sing-box/eBPF 的 `exclude_uid` 使用。
+- 若 `/etc/group` 明确存在 `shellcrash:x:7890:...` 且此 GID 没有其他名称冲突，X-Tunnel Go 子进程和独立 CF 网络探测子进程使用主 GID **7890**，使其 socket 满足 ShellCrash 已有的绕过规则；其他主机继续使用 GID=UID。
+- 不修改 ShellCrash 配置、nftables/iptables、系统路由或 DNS；不创建伪造的 shellcrash 系统组。ShellCrash 停用后无需修改配置。
+- 修改代码后，**需要明确重启一次 X-Tunnel 核心**，让旧子进程重新以新 GID 启动；之后不需要为定时测速自动重启核心。
+
+验证命令（在 ShellCrash 已运行时）：
+
+```bash
+getent group shellcrash
+nft list chain inet shellcrash output 2>/dev/null | grep skgid
+systemctl restart x-tunnel.service
+journalctl -u x-tunnel.service -n 40 --no-pager
+for pid in $(pidof x-tunnel); do
+  awk -v p="$pid" '/^(Uid|Gid):/ {print p, $0}' "/proc/$pid/status"
+done
+```
+
+正常应看到子进程 `Uid: 29002`、`Gid: 7890`，启动日志包含 `ShellCrash socket bypass`。如果 `/etc/group` 中不存在 ShellCrash 的 GID 7890、ShellCrash 的 OUTPUT 链未包含 `meta skgid 7890 return`、或仍有其他 TUN/eBPF/策略路由接管，**不能保证仅靠设置 GID 完全绕过**；这时应结合 `nft list ruleset` 和 `ip rule show` 继续定位，不要盲目清空防火墙规则。
+
 ## 服务及故障检查
 
 ```bash

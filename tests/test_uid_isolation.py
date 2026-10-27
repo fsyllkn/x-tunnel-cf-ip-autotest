@@ -60,6 +60,7 @@ class UIDIsolationTest(unittest.TestCase):
         }
         entry = {"spec": spec, "process": None, "restart_at": None}
         with mock.patch.object(supervisor, "child_workdir", return_value=Path("/tmp/x-tunnel-test-work")), \
+             mock.patch.object(supervisor, "outbound_process_gid", return_value=29002), \
              mock.patch.object(supervisor.subprocess, "Popen") as launch:
             launch.return_value.pid = 12345
             supervisor.start_child(entry)

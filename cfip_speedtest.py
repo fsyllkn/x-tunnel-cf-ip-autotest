@@ -21,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 from project_settings import build_speed_tiers, get_target_mbps, load_project_env, telegram_proxy_chain, read_telegram_credentials, config_lock
+from shellcrash_compat import outbound_process_gid
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -492,6 +493,7 @@ def isolated_worker_messages(uid, action, payload):
     """Stream IPC from an eBPF-exempt UID without changing kernel routing tables."""
     if os.geteuid() != 0 or uid <= 0:
         raise RuntimeError("isolated CF tests require a root controller and non-root worker")
+    gid = outbound_process_gid(uid)
     process = subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--network-worker", action],
         cwd=str(BASE_DIR),
@@ -500,7 +502,7 @@ def isolated_worker_messages(uid, action, payload):
         stderr=subprocess.PIPE,
         text=True,
         user=uid,
-        group=uid,
+        group=gid,
         extra_groups=(),
     )
     try:
