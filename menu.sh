@@ -387,8 +387,8 @@ manage_timer() {
         python3 "$SYSTEMD_TIMER_CLI" validate "$chosen" || return
         # Timer management must never run the speedtest, install services, or
         # restart the X-Tunnel core. Installation is a separate explicit action.
-        if [ ! -f /etc/systemd/system/x-tunnel-speedtest.service ] ||
-           [ ! -f /etc/systemd/system/x-tunnel-speedtest.timer ]; then
+        if ! systemctl cat x-tunnel-speedtest.service >/dev/null 2>&1 ||
+           ! systemctl cat x-tunnel-speedtest.timer >/dev/null 2>&1; then
           say '定时器或测速服务尚未安装。请先使用菜单 1 安装/修复服务，再返回设置定时时间。'
           return 1
         fi
