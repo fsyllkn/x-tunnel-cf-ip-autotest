@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import contextlib
+import fcntl
 import logging
 import hashlib
 import ipaddress
@@ -41,6 +43,7 @@ POLL_INTERVAL = 5
 STALE_X_TUNNEL_WAIT = 5.0
 UNKNOWN_SOCKET_WAIT = 1.0
 PORT_RELEASE_POLL = 0.25
+SUPERVISOR_LOCK = Path("/run/lock/x-tunnel-supervisor.lock")
 notified_port_conflicts = set()
 
 logging.basicConfig(
@@ -55,6 +58,36 @@ stopping = False
 def stop_handler(signum, frame):
     global stopping
     stopping = True
+
+
+@contextlib.contextmanager
+def supervisor_instance_lock(path=None):
+    """Prevent duplicate supervisors from launching duplicate SOCKS listeners.
+
+    Keep the lock owned by this Python supervisor only; Popen closes inherited
+    file descriptors, and O_CLOEXEC provides a second safeguard on exec.
+    This never kills a process outside the service's own cgroup.
+    """
+    path = Path(path) if path is not None else SUPERVISOR_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                "another X-Tunnel supervisor holds %s; "
+                "do not start another instance or kill unknown x-tunnel processes"
+                % path
+            ) from error
+        os.ftruncate(fd, 0)
+        os.write(fd, ("%d\n" % os.getpid()).encode("ascii"))
+        yield
+    finally:
+        # Do not unlink the file: an unlinked lock may allow two holders.
+        os.close(fd)
 
 
 def port_available(port, listen_hosts, reusable_bindings):
@@ -216,6 +249,18 @@ def allocate_port(
                     "%s PID %d" % (owner["name"], owner["pid"])
                     for owner in owners
                 ) or "unidentified or transient socket"
+                if port == preferred_port and any(
+                    owner["is_x_tunnel"] for owner in owners
+                ):
+                    # A previous or separately managed X-Tunnel is still
+                    # listening. Choosing the next port would hide possible
+                    # orphaned processes and grow the process count.
+                    raise ValueError(
+                        "SOCKS5 port %d for node %s is still owned by %s; "
+                        "refusing automatic port shift. Inspect systemd cgroup "
+                        "and process parents; do not kill unrelated tunnels."
+                        % (port, node_name, owner_text)
+                    )
                 blocked_ports.append({
                     "port": port,
                     "owner": owner_text,
@@ -465,69 +510,78 @@ def signature():
     return tuple(watched)
 
 
-def main():
+def run_supervisor():
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
     children = {}
     last_signature = None
     last_error_signature = None
 
-    while not stopping:
-        try:
-            current_signature = signature()
-            if current_signature != last_signature:
-                try:
-                    specs = read_specs(
-                        reusable_bindings(children),
-                        on_port_conflict=notify_port_conflict,
-                    )
-                except Exception as error:
-                    if current_signature != last_error_signature:
-                        logging.error("invalid configuration; keeping current nodes: %s", error)
-                        last_error_signature = current_signature
-                else:
+    try:
+        while not stopping:
+            try:
+                current_signature = signature()
+                if current_signature != last_signature:
                     try:
-                        sync_result = subprocess.run(
-                            [
-                                sys.executable,
-                                SINGBOX_SYNC,
-                                "--reuse-bindings-json",
-                                json.dumps(sorted(reusable_bindings(children))),
-                            ],
-                            check=True,
-                            capture_output=True,
-                            text=True,
+                        specs = read_specs(
+                            reusable_bindings(children),
+                            on_port_conflict=notify_port_conflict,
                         )
-                        if sync_result.stdout.strip() == "provider-updated":
-                            logging.info("updated local X-Tunnel node provider")
-                    except (OSError, subprocess.CalledProcessError):
-                        logging.exception("failed to write local X-Tunnel node provider")
-                    reconcile(specs, children)
-                    logging.info("loaded %d node(s)", len(specs))
-                    last_signature = current_signature
-                    last_error_signature = None
-        except OSError:
-            if last_signature is None:
-                raise
-            logging.exception("cannot access configuration; keeping current nodes")
+                    except Exception as error:
+                        if current_signature != last_error_signature:
+                            logging.error("invalid configuration; keeping current nodes: %s", error)
+                            last_error_signature = current_signature
+                    else:
+                        try:
+                            sync_result = subprocess.run(
+                                [
+                                    sys.executable,
+                                    SINGBOX_SYNC,
+                                    "--reuse-bindings-json",
+                                    json.dumps(sorted(reusable_bindings(children))),
+                                ],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                            )
+                            if sync_result.stdout.strip() == "provider-updated":
+                                logging.info("updated local X-Tunnel node provider")
+                        except (OSError, subprocess.CalledProcessError):
+                            logging.exception("failed to write local X-Tunnel node provider")
+                        reconcile(specs, children)
+                        logging.info("loaded %d node(s)", len(specs))
+                        last_signature = current_signature
+                        last_error_signature = None
+            except OSError:
+                if last_signature is None:
+                    raise
+                logging.exception("cannot access configuration; keeping current nodes")
 
-        now = time.monotonic()
+            now = time.monotonic()
+            for entry in children.values():
+                process = entry["process"]
+                if process is not None and process.poll() is not None:
+                    logging.warning(
+                        "node %s exited with status %d; restarting in %d seconds",
+                        entry["spec"]["name"], process.returncode, RESTART_DELAY,
+                    )
+                    entry["process"] = None
+                    entry["restart_at"] = now + RESTART_DELAY
+                if entry["process"] is None and entry["restart_at"] is not None and now >= entry["restart_at"]:
+                    start_child(entry)
+            time.sleep(POLL_INTERVAL)
+    finally:
+        logging.info("shutting down X-Tunnel supervisor (%d managed node(s))", len(children))
         for entry in children.values():
-            process = entry["process"]
-            if process is not None and process.poll() is not None:
-                logging.warning(
-                    "node %s exited with status %d; restarting in %d seconds",
-                    entry["spec"]["name"], process.returncode, RESTART_DELAY,
-                )
-                entry["process"] = None
-                entry["restart_at"] = now + RESTART_DELAY
-            if entry["process"] is None and entry["restart_at"] is not None and now >= entry["restart_at"]:
-                start_child(entry)
-        time.sleep(POLL_INTERVAL)
+            try:
+                stop_child(entry)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                logging.exception("failed to stop managed node %s", entry["spec"]["name"])
 
-    for entry in children.values():
-        stop_child(entry)
 
+def main():
+    with supervisor_instance_lock():
+        run_supervisor()
 
 if __name__ == "__main__":
     try:

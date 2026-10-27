@@ -9,6 +9,11 @@ Type=simple
 WorkingDirectory=@PROJECT_DIR@
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/supervisor.py
+# Ensure every child in this unit's cgroup is terminated on stop/restart.
+# Do not use KillMode=process: detached Go children would accumulate.
+KillMode=control-group
+TimeoutStopSec=45s
+SendSIGKILL=yes
 Restart=always
 RestartSec=5s
 
