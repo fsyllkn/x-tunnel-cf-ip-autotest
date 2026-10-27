@@ -52,6 +52,10 @@ def is_enabled():
     return systemctl("is-enabled", "--quiet", TIMER, check=False).returncode == 0
 
 
+def is_active():
+    return systemctl("is-active", "--quiet", TIMER, check=False).returncode == 0
+
+
 def write_schedule(value):
     path = DROPIN_DIR / DROPIN_NAME
     content = (
@@ -104,14 +108,21 @@ def main():
         systemctl("disable", "--now", TIMER)
         print("Daily CF speedtest disabled; saved time remains %s." % saved_time())
         return 0
-    enabled_before = is_enabled()
+    # Never start x-tunnel-speedtest.service here. Only arm/rearm its timer.
+    # Persistent=false in the timer definition avoids catch-up executions.
+    active_before = is_active()
     changed = write_schedule(value)
     if changed:
         systemctl("daemon-reload")
-    systemctl("enable", "--now", TIMER)
-    if changed and enabled_before:
-        systemctl("restart", TIMER)
-    print("Daily CF speedtest: %s (host local time; no X-Tunnel restart)." % value)
+    systemctl("enable", TIMER)  # boot enablement only; never implies a scan
+    if not active_before:
+        systemctl("start", TIMER)  # arm the future schedule
+    elif changed:
+        systemctl("restart", TIMER)  # rearm calendar only if time changed
+    print(
+        "Daily CF speedtest schedule armed at %s (host local time); "
+        "no speedtest launched or X-Tunnel core restarted." % value
+    )
     return 0
 
 
