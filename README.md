@@ -132,6 +132,25 @@ curl -4 --socks5-hostname 127.0.0.1:32322 --connect-timeout 8 --max-time 20 http
 
 实际端口依配置和端口冲突自动顺延结果而定。发生异常时检查日志中的节点名称、目标地址、监听端口和启动错误。不要在未知原因下盲目更改系统路由。
 
+## 重启后的进程数与通道超时排查
+
+**每个启用的 YAML 节点对应一个独立的 X-Tunnel Go 进程**；`defaults.connections`（或节点行第 5 列）控制的是进程内部的连接/通道数，**不是进程数**。如有 6 个有效节点，通常会观察到 6 个 `x-tunnel` 子进程。启动日志 `loaded 6 node(s)` 只表示配置加载数量，不保证所有节点都实际连通。
+
+Debian/Ubuntu 的 `x-tunnel.service` 明确使用 `KillMode=control-group`、`SendSIGKILL=yes`，停用/重启时会回收同一个 systemd cgroup 内的子进程。supervisor 使用非阻塞独占锁 `/run/lock/x-tunnel-supervisor.lock` 防止同机重复管理实例，退出异常也清理其**自行启动**的子进程。若原 SOCKS5 端口仍被其他 `x-tunnel` 进程占用，启动器现在会报错并拒绝悄悄换端口，以防隐藏残留；非 X-Tunnel 的端口占用仍遵循原来的顺延规则。**不会执行全局 pkill/killall，也不修改其他项目的 X-Tunnel 进程。**
+
+建议通过下面的只读命令核查：
+
+```bash
+systemctl show x-tunnel.service -p MainPID -p ControlGroup -p KillMode
+ps -C x-tunnel -o pid,ppid,uid,gid,stat,etime,comm
+systemctl status x-tunnel.service --no-pager -l
+journalctl -u x-tunnel.service -n 100 --no-pager
+```
+
+如 `KillMode` 不是 `control-group`，请用 `systemctl cat x-tunnel.service` 查看是否有第三方 drop-in 覆盖（不要直接清除未知 drop-in）。确认所有子进程都属于 `x-tunnel.service` 的 cgroup；如果还有 **cgroup 外**的 `x-tunnel` 进程，先核对其 PPID、UID、监听端口和所属服务，勿全局杀进程。
+
+Cloudflare 通道 `dial tcp <IP>:443: i/o timeout` 是连接超时，不等于子进程泄漏。若多个节点反复连 `104.17.150.68:443` 超时而 `104.17.112.169:443` 存在成功连接，优先单独测试这两个候选 IP 的直连链路，并检查 ShellCrash GID 绕过、路由及当前负载。不要为了修复进程数量而自动改写 CF IP 或重置所有节点。每节点 15 个并发通道乘以多个节点会造成大量连接，请根据实际链路适当降低 `connections`，测速后再选稳定 CF IP。
+
 ## 更新和卸载
 
 ```bash
