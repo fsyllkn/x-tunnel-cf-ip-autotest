@@ -3,8 +3,8 @@ import argparse
 import concurrent.futures
 import datetime
 import fcntl
-import html
 import http.client
+import logging
 import ipaddress
 import json
 import os
