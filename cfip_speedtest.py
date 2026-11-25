@@ -3,8 +3,8 @@ import argparse
 import concurrent.futures
 import datetime
 import fcntl
-import html
 import http.client
+import logging
 import ipaddress
 import json
 import os
@@ -21,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 from project_settings import build_speed_tiers, get_target_mbps, load_project_env, telegram_proxy_chain, read_telegram_credentials, config_lock
+from telegram_report import rich_report_pages
 from shellcrash_compat import outbound_process_gid
 
 
@@ -910,16 +911,20 @@ class TelegramProgress:
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
 
-    def _request(self, method, text, parse_mode=None):
+    def _request(self, method, text=None, parse_mode=None, rich_html=None):
         import urllib.error
         import urllib.request
 
         endpoint = "https://api.telegram.org/bot%s/%s" % (self.token, method)
-        payload = {"chat_id": self.chat_id, "text": text}
-        if self.message_id is not None:
+        payload = {"chat_id": self.chat_id}
+        if rich_html is not None:
+            payload["rich_message"] = {"html": rich_html}
+        else:
+            payload["text"] = text
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+        if self.message_id is not None and method == "editMessageText":
             payload["message_id"] = self.message_id
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
         proxies = [self.proxy] if self.proxy else []
         proxies.extend(proxy for proxy in self.proxies if proxy not in proxies)
         for proxy in proxies:
@@ -933,7 +938,7 @@ class TelegramProgress:
                     result = json.loads(response.read(64 * 1024).decode("utf-8"))
                 if result.get("ok"):
                     self.proxy = proxy
-                    if method == "sendMessage":
+                    if method in ("sendMessage", "sendRichMessage") and self.message_id is None:
                         self.message_id = result["result"]["message_id"]
                     return True
             except (OSError, TimeoutError, ValueError, urllib.error.URLError, http.client.HTTPException):
@@ -961,20 +966,33 @@ class TelegramProgress:
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=25)
-        body = html.escape(notification_text(report, error))
-        if (report or {}).get("mode") == "single-ip" and report.get("ip"):
-            ip = report["ip"]
-            body = body.replace(html.escape(ip), "<code>%s</code>" % html.escape(ip))
-        for record in (report or {}).get("candidates", []):
-            ip = record.get("ip")
-            if ip:
-                body = body.replace(html.escape(ip), "<code>%s</code>" % html.escape(ip))
-        chunks = split_telegram_message(body)
+        # Bot API 10.1+ supports native bordered tables with rich_message.html.
+        # Edit the existing progress message when possible to avoid chat spam.
+        # Preserve old sendMessage fallback on unsupported Telegram servers.
+        try:
+            pages = rich_report_pages(report, error)
+        except (ValueError, TypeError, KeyError, OverflowError) as render_error:
+            logging.warning("Telegram table report rendering failed: %s", render_error)
+            pages = []
+        if pages:
+            first_method = "editMessageText" if self.message_id is not None else "sendRichMessage"
+            if self._request(first_method, rich_html=pages[0]):
+                self.last_sent_text = pages[0]
+                if all(
+                    self._request("sendRichMessage", rich_html=page)
+                    for page in pages[1:]
+                ):
+                    return
+                logging.warning("Telegram rich report continuation failed; sending plain report fallback")
+            else:
+                logging.warning("Telegram native table unsupported or request failed; using plain report")
+        # Do not split inside HTML tags. Plain text also works in old clients.
+        chunks = split_telegram_message(notification_text(report, error))
         if chunks:
-            if self._send_edit(chunks[0], parse_mode="HTML"):
+            if self._send_edit(chunks[0]):
                 self.last_sent_text = chunks[0]
             for chunk in chunks[1:]:
-                self._request("sendMessage", chunk, parse_mode="HTML")
+                self._request("sendMessage", chunk)
 
 def apply_ips(assignments):
     # One lock shared with Bot /topspeed and legacy migrations.

@@ -69,6 +69,17 @@ cp -p x-tunnel.yaml x-tunnel.yaml.backup
 chmod 600 x-tunnel.yaml.backup
 ```
 
+## Telegram 测速结果原生表格
+
+**手动单 IP 测速、完整测速、每日 systemd 定时测速，以及从 Bot 发起的测速，统一使用同一个 CF 测速结果通知入口。** Bot 进度仍以原来的文字消息更新；测速完成后优先把进度消息替换为 Telegram **Rich Message 原生边框表格**（Bot API 10.1+，`rich_message.html`，而非等宽字符模拟），匹配手机端的自动换行效果：
+
+- 首张表：成功/失败、候选和 RTT 有效数量、实际测速次数、目标/回退速度档位、节点写入数量
+- 第二张表：节点名称与主/备用 CF IP、写入或保留状态
+- 第三张表：每轮测速 IP、机房、均速、RTT、达标/失败/提前淘汰；长报告自动分多条发送
+- 单 IP 模式：使用两列「指标 / 结果」原生表格，保留速度中位数、稳定性、机房及节点更新结果
+
+Telegram 官方 Bot API 说明：[Rich messages](https://core.telegram.org/bots/api#rich-messages)。旧服务端不接受富文本请求或消息发送失败时，会回退为传统纯文字通知，不会因排版失败而影响测速和配置写入。请使用支持 Rich Message 的新版 Telegram 客户端查看边框表格。
+
 ## SSH 快捷菜单
 
 安装后直接输入 `x-t`（兼容 `xtunnel-menu`）。与 OpenWrt 对齐的编号如下：
